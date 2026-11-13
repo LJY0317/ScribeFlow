@@ -192,19 +192,32 @@ def write_text_atomic(path: Path, content: str) -> None:
             temp.unlink()
 
 
-def render_chunk(source: Path, chunk: Chunk, destination: Path) -> None:
-    """Copy encoded audio packets into a standalone chunk; never re-encode."""
+def render_chunk(
+    source: Path, chunk: Chunk, destination: Path, *, is_last: bool = False,
+) -> None:
+    """Copy audio packets with accurate boundaries, without re-encoding.
+
+    Input-side -ss seeks to an earlier container/keyframe boundary, especially
+    in Ogg/WebM, which can duplicate seconds of audio between chunks. Output-
+    side -ss discards packets up to the requested boundary without decoding.
+    Omit -ss for the first chunk to retain encoder priming packets, and omit
+    -t for the last to avoid losing a trailing packet in some containers.
+    """
     temp = destination.with_name(destination.stem + ".part" + destination.suffix)
+    command = [
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-y", "-i", str(source),
+    ]
+    if chunk.start > 0:
+        command.extend(["-ss", str(chunk.start)])
+    if not is_last:
+        command.extend(["-t", str(chunk.duration)])
+    command.extend([
+        "-map", "0:a:0", "-vn", "-sn", "-dn",
+        "-c:a", "copy", str(temp),
+    ])
     try:
-        subprocess.run(
-            [
-                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-                "-y", "-ss", str(chunk.start), "-i", str(source),
-                "-t", str(chunk.duration), "-map", "0:a:0",
-                "-vn", "-sn", "-dn", "-c:a", "copy", str(temp),
-            ],
-            check=True, capture_output=True, text=True,
-        )
+        subprocess.run(command, check=True, capture_output=True, text=True)
         if not temp.is_file() or temp.stat().st_size <= 0:
             raise ValueError(f"{chunk.name}번 구간이 비어 있습니다.")
         temp.replace(destination)
@@ -235,7 +248,7 @@ def prepare_stream_copy_chunks(
             oversized = False
             for chunk in chunks:
                 path = scratch / f"{chunk.name}{source.suffix.lower()}"
-                render_chunk(source, chunk, path)
+                render_chunk(source, chunk, path, is_last=chunk.index == len(chunks))
                 if path.stat().st_size > CHUNK_TARGET_BYTES:
                     oversized = True
                     break
@@ -346,7 +359,7 @@ def transcribe_file(
             source if direct else chunk_dir / f"{chunk.name}{source.suffix.lower()}"
         )
         if not direct and not audio_path.exists():
-            render_chunk(source, chunk, audio_path)
+            render_chunk(source, chunk, audio_path, is_last=chunk.index == len(chunks))
         if not (0 < audio_path.stat().st_size <= MAX_UPLOAD_BYTES):
             raise ValueError(f"{chunk.index}번 오디오 구간 크기가 유효하지 않습니다.")
         if client is None:
