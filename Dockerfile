@@ -1,5 +1,5 @@
 # Cloud Run Job: FFmpeg/rclone process one Drive audio at a time.
-FROM rclone/rclone:1.72.1 AS rclone
+FROM rclone/rclone:1.74.0 AS rclone
 
 FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
