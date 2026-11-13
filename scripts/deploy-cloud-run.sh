@@ -97,11 +97,8 @@ gcloud run deploy "$SERVICE" --image "$IMAGE" --project "$GCP_PROJECT" \
   --set-env-vars="SCRIBEFLOW_CLOUD_MODE=gateway,GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},SCRIBEFLOW_REGION=${REGION},SCRIBEFLOW_JOB=${JOB},SCRIBEFLOW_MCP_URL=${URL},SCRIBEFLOW_GOOGLE_CLIENT_ID=${SCRIBEFLOW_GOOGLE_CLIENT_ID},SCRIBEFLOW_GOOGLE_EMAIL=${SCRIBEFLOW_GOOGLE_EMAIL}" \
   --set-secrets="SCRIBEFLOW_GOOGLE_CLIENT_SECRET=${GOOGLE_SECRET}:latest,SCRIBEFLOW_OAUTH_SEED=${SEED_SECRET}:latest"
 
-ACTUAL_URL="$(gcloud run services describe "$SERVICE" --project "$GCP_PROJECT" \
-  --region "$REGION" --format='value(status.url)')"
-if [[ "$ACTUAL_URL" != "$URL" ]]; then
-  echo "Service is private. Expected $URL, actual $ACTUAL_URL; update Google OAuth redirect configuration before publishing." >&2
-  exit 1
-fi
+# Cloud Run may return its hash-based alias from status.url, even when the
+# deterministic URL registered with Google OAuth is also valid. Do not treat
+# differing aliases as a deployment failure.
 printf 'OAuth gateway deployed privately at %s/mcp\n' "$URL"
 printf 'No audio was transcribed. Run scripts/enable-mcp-access.sh after OAuth setup.\n'

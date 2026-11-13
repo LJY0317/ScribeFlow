@@ -4,8 +4,10 @@ set -euo pipefail
 : "${GCP_PROJECT:?}"
 REGION="${SCRIBEFLOW_REGION:-asia-northeast3}"
 SERVICE=scribeflow-mcp
-URL="$(gcloud run services describe "$SERVICE" --project "$GCP_PROJECT" \
-  --region "$REGION" --format='value(status.url)')"
+# Use the same deterministic URL registered as the Google OAuth redirect URI.
+# status.url may return Cloud Run's second, hash-based alias instead.
+PROJECT_NUMBER="$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')"
+URL="https://${SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
 if [[ "$URL" != https://* ]]; then
   echo 'Cloud Run HTTPS URL not found' >&2
   exit 1
