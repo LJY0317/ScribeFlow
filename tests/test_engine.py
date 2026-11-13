@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from scribeflow.engine import (
     MAX_UPLOAD_BYTES, auto_chunk_seconds, clock, plan_chunks,
-    plan_audio_chunks, transcribe_file,
+    plan_audio_chunks, prepare_stream_copy_chunks, transcribe_file,
 )
 from scribeflow.credentials import get_api_key
 
@@ -132,6 +132,56 @@ class LosslessAudioTests(unittest.TestCase):
                 self.assertTrue(all(
                     chunk["end"] > chunk["start"] for chunk in manifest["chunks"]
                 ))
+
+    def test_lossless_split_preserves_every_encoded_packet(self):
+        """Boundary seeks must neither repeat nor lose encoded audio packets."""
+        formats = (
+            (".mp3", "libmp3lame"), (".m4a", "aac"),
+            (".ogg", "libopus"), (".webm", "libopus"),
+        )
+
+        def packet_hashes(path: Path) -> list[str]:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "error", "-select_streams", "a:0",
+                    "-show_packets", "-show_data_hash", "sha256",
+                    "-show_entries", "packet=data_hash", "-of", "json", str(path),
+                ],
+                check=True, capture_output=True, text=True,
+            )
+            return [
+                packet["data_hash"]
+                for packet in json.loads(result.stdout)["packets"]
+            ]
+
+        for suffix, codec in formats:
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                source = root / ("noise" + suffix)
+                subprocess.run(
+                    [
+                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "lavfi", "-i",
+                        "anoisesrc=c=pink:sample_rate=48000:duration=12",
+                        "-c:a", codec, str(source),
+                    ],
+                    check=True, capture_output=True, text=True,
+                )
+                original_bytes = source.read_bytes()
+                original_packets = packet_hashes(source)
+                chunks = prepare_stream_copy_chunks(
+                    source, 12.0, 4, 0, root / "chunks",
+                )
+                self.assertEqual(len(chunks), 3)
+                actual_packets = [
+                    packet
+                    for chunk in chunks
+                    for packet in packet_hashes(
+                        root / "chunks" / f"{chunk.name}{suffix}"
+                    )
+                ]
+                self.assertEqual(actual_packets, original_packets)
+                self.assertEqual(source.read_bytes(), original_bytes)
 
     def test_unsupported_audio_is_not_lossily_converted(self):
         with tempfile.TemporaryDirectory() as folder:
