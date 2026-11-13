@@ -13,13 +13,23 @@ from filelock import FileLock
 
 from scribeflow.cache import MAX_AGE_SECONDS, cache_stats, clean_cache
 from scribeflow.pipeline import (
-    _drive_file_id, paths_for, plain_transcript, remote_result_url,
+    _drive_file_id, cache_root, paths_for, plain_transcript, remote_result_url,
     resolve_source, run_rclone, scan_drive, transcribe,
 )
 from scribeflow.provenance import source_fingerprint, stamp_transcript
 
 
 class FilePathTests(unittest.TestCase):
+    def test_default_cache_stays_in_source_checkout(self):
+        with patch.dict("os.environ", {"SCRIBEFLOW_CACHE_DIR": ""}):
+            checkout = Path(__file__).resolve().parents[1]
+            self.assertEqual(cache_root(), checkout / ".scribeflow" / "cache")
+
+    def test_explicit_cache_location_overrides_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict("os.environ", {"SCRIBEFLOW_CACHE_DIR": directory}):
+                self.assertEqual(cache_root(), Path(directory).resolve())
+
     def test_scan_returns_only_audio_missing_transcript(self):
         audio_hash = hashlib.sha256(b"test-audio").hexdigest()
         entries = [

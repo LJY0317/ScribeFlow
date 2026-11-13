@@ -67,7 +67,7 @@ uv run scribeflow transcribe '파일_ID' --json
 
 ## 임시 캐시와 재시도
 
-캐시는 macOS에서 `~/Library/Caches/ScribeFlow`에 저장됩니다(다른 OS는 표준 사용자 캐시 경로). `SCRIBEFLOW_CACHE_DIR`로 변경할 수 있습니다. MP3 분할본, 구간별 전사문, manifest는 모두 여기에서만 사용합니다.
+GitHub에서 받은 소스 폴더에서 실행하는 경우 캐시는 **프로젝트 내부 `.scribeflow/cache/`**에 저장됩니다. 이 폴더는 Git 업로드 대상에서 제외됩니다. 별도로 패키지만 설치해 사용하는 경우에는 OS 표준 사용자 캐시 폴더를 사용합니다. 필요하면 `SCRIBEFLOW_CACHE_DIR`로 경로를 변경할 수 있습니다. MP3 분할본, 구간별 전사문, manifest 및 잠금 파일은 이 캐시에만 생성됩니다.
 
 - **성공 후 즉시 제거**, 실패한 작업만 이어서 실행할 수 있도록 보관합니다.
 - 실패 캐시는 7일 또는 전체 1GiB 한도 기준으로 오래된 작업부터 정리합니다. 활성 작업은 잠금으로 보호합니다.
@@ -81,3 +81,13 @@ uv run python -m unittest discover -s tests -v
 ```
 
 현재 별도의 웹 UI, 화자 자동 식별 또는 AI 요약 모델은 포함하지 않습니다.
+
+## 제거 및 잔여 파일
+
+소스 폴더에서 사용했다면 최종 전사문을 제외한 ScribeFlow 전용 로컬 작업 파일은 `.scribeflow/`와 `.venv/` 등에 모입니다. 먼저 실행 중인 작업이 없는지 확인하고, 아래 명령으로 **ScribeFlow 전용 키체인 항목**을 지운 뒤 프로젝트 폴더를 삭제하면 됩니다.
+
+```bash
+uv run scribeflow auth remove
+```
+
+이전에 사용한 **구형 macOS 캐시** `~/Library/Caches/ScribeFlow/`는 별도로 확인해 삭제할 수 있습니다. `SCRIBEFLOW_CACHE_DIR`을 외부 경로로 설정했거나 패키지 설치 방식으로 사용했다면 해당 캐시도 확인하세요. `uv` 다운로드 캐시와 `rclone` 인증 설정, Homebrew에 설치한 FFmpeg 등은 다른 프로그램에서도 사용하므로 자동 삭제하지 않습니다. 원본 음성과 완성된 TXT는 사용자가 지정한 폴더 또는 Google Drive에 그대로 남습니다.

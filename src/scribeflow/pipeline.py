@@ -138,6 +138,13 @@ def cache_root() -> Path:
     custom = os.environ.get("SCRIBEFLOW_CACHE_DIR")
     if custom:
         return Path(custom).expanduser().resolve()
+    # Editable source checkouts keep ScribeFlow's temporary data self-contained.
+    # A packaged installation remains free to use the OS-standard cache dir.
+    project_root = Path(__file__).resolve().parents[2]
+    if (project_root / "pyproject.toml").is_file() and (
+        project_root / "src" / "scribeflow"
+    ).is_dir():
+        return project_root / ".scribeflow" / "cache"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Caches" / "ScribeFlow"
     if sys.platform == "win32":
