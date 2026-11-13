@@ -31,6 +31,8 @@ git clone https://github.com/LJY0317/ScribeFlow.git
 cd ScribeFlow
 export GCP_PROJECT='your-cloud-project-id'
 export SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID='folder_id_for_audio_scope'
+# 선택: 추가로 전사가 허용된 여러 폴더 ID를 콜론(:)으로 나열
+export SCRIBEFLOW_ALLOWED_FOLDER_IDS='another_folder_id:one_more_folder_id'
 export SCRIBEFLOW_OAUTH_ISSUER='https://your-tenant.us.auth0.com/'
 export SCRIBEFLOW_ALLOWED_SUBJECT='your-auth0-user-subject'
 ```
@@ -87,6 +89,8 @@ bash scripts/enable-mcp-access.sh
 ChatGPT 웹의 Plugins에서 `Add custom MCP server`로
 `https://<service-url>/mcp`를 추가해 OAuth 로그인을 완료합니다.
 이후 해당 플러그인에서 `transcribe_audio(file_id)`를 사용합니다.
+기본 폴더 외 음성은 `transcribe_audio(file_id, folder_id)`처럼 폴더 ID를
+함께 전달할 수 있지만, 서버에 설정한 **허용된 폴더만** 접근할 수 있습니다.
 반환된 `operation`을 `get_transcription_status(operation)`에
 전달해 완료 여부를 확인하세요. 완료된 TXT는 원본 Google Drive 폴더에
 저장됩니다. 실행 로그 링크는 인증된 Google Cloud 콘솔에서 볼 수 있습니다.

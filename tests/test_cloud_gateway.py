@@ -23,6 +23,8 @@ class CloudGatewayTests(unittest.TestCase):
             "SCRIBEFLOW_OAUTH_ISSUER": "https://example.us.auth0.com/",
             "SCRIBEFLOW_ALLOWED_SUBJECT": "google-oauth2|example",
             "GOOGLE_CLOUD_PROJECT": "sample-cloud-project",
+            "SCRIBEFLOW_DEFAULT_FOLDER_ID": "folder_" + "a" * 25,
+            "SCRIBEFLOW_ALLOWED_FOLDER_IDS": "",
         }
         with patch.dict(os.environ, settings):
             with patch("scribeflow.cloud_gateway.CloudRunJobs"):
@@ -43,6 +45,8 @@ class CloudGatewayTests(unittest.TestCase):
             "SCRIBEFLOW_OAUTH_ISSUER": "https://example.us.auth0.com/",
             "SCRIBEFLOW_ALLOWED_SUBJECT": "google-oauth2|example",
             "GOOGLE_CLOUD_PROJECT": "sample-cloud-project",
+            "SCRIBEFLOW_DEFAULT_FOLDER_ID": "folder_" + "a" * 25,
+            "SCRIBEFLOW_ALLOWED_FOLDER_IDS": "",
         }
         with patch.dict(os.environ, settings):
             with patch("scribeflow.cloud_gateway.CloudRunJobs"):

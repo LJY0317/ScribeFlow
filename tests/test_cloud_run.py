@@ -34,6 +34,21 @@ class CloudRunTests(unittest.TestCase):
         self.assertEqual(payload["overrides"]["containerOverrides"][0]["env"][0],
                          {"name": "SCRIBEFLOW_SOURCE_FILE_ID", "value": "testfile_" + "a" * 22})
 
+    def test_explicit_folder_scope_is_allowlisted(self):
+        folder = "folder_" + "a" * 25
+        api = CloudRunJobs(self.target, session=self.session, allowed_folder_ids=(folder,))
+        with self.assertRaises(ValueError):
+            api.start("testfile_" + "a" * 22, "folder_" + "b" * 25)
+        self.session.request.assert_not_called()
+        self.session.request.return_value = self._response({
+            "name": self.prefix + "1234567890abcdef",
+        })
+        api.start("testfile_" + "a" * 22, folder)
+        self.assertIn(
+            {"name": "SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID", "value": folder},
+            self.session.request.call_args.kwargs["json"]["overrides"]["containerOverrides"][0]["env"],
+        )
+
     def test_status_does_not_allow_arbitrary_cloud_resources(self):
         with self.assertRaises(ValueError):
             self.api.status("projects/another/locations/asia-northeast3/operations/123")

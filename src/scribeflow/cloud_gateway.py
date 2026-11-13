@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from urllib.parse import urlparse
 
 from .cloud_run import CloudRunJobs, CloudRunTarget
@@ -57,11 +58,16 @@ def create_server():
         raise ValueError("OAuth issuer and allowed subject must be configured")
     resource_url = url + "/mcp"
     verifier = VerifiedOAuthToken(issuer, resource_url, subject, scope)
+    default_folder_id = os.environ.get("SCRIBEFLOW_DEFAULT_FOLDER_ID", "")
+    other_folders = os.environ.get("SCRIBEFLOW_ALLOWED_FOLDER_IDS", "").split(":")
+    allowed = tuple(filter(None, [default_folder_id, *other_folders]))
+    if not allowed or any(not re.fullmatch(r"[A-Za-z0-9_-]{20,}", item) for item in allowed):
+        raise ValueError("An allowed Google Drive folder must be configured")
     backend = CloudRunJobs(CloudRunTarget(
         project=os.environ["GOOGLE_CLOUD_PROJECT"],
         region=os.environ.get("SCRIBEFLOW_REGION", "asia-northeast3"),
         job=os.environ.get("SCRIBEFLOW_JOB", "scribeflow-transcribe"),
-    ))
+    ), allowed_folder_ids=allowed)
     server = FastMCP(
         "ScribeFlow", host="0.0.0.0", port=int(os.environ.get("PORT", "8080")),
         stateless_http=True, json_response=True,
@@ -82,9 +88,9 @@ def create_server():
                                     openWorldHint=False),
         meta=oauth,
     )
-    def transcribe_audio(file_id: str) -> dict:
+    def transcribe_audio(file_id: str, folder_id: str = "") -> dict:
         """Start one transcription; returns an operation to check later."""
-        return backend.start(file_id)
+        return backend.start(file_id, folder_id)
 
     @server.tool(
         description="Check an existing ScribeFlow transcription without starting another job.",
