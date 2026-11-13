@@ -55,7 +55,9 @@ class ChunkTests(unittest.TestCase):
 
     def test_invalid_config(self):
         with self.assertRaises(ValueError):
-            plan_chunks(100, 20, 2)
+            plan_chunks(100, 0, 0)
+        with self.assertRaises(ValueError):
+            plan_chunks(100, 20, 6)
 
     def test_clock(self):
         self.assertEqual(clock(3661), "01:01:01")
