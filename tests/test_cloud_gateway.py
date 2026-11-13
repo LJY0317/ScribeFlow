@@ -37,6 +37,20 @@ class CloudGatewayTests(unittest.TestCase):
         for tool in tools:
             self.assertEqual(tool.meta["securitySchemes"][0]["type"], "oauth2")
 
+    def test_entire_drive_works_without_folder_allowlist(self):
+        settings = {
+            "SCRIBEFLOW_MCP_URL": "https://scribeflow-example.a.run.app",
+            "SCRIBEFLOW_OAUTH_ISSUER": "https://example.us.auth0.com/",
+            "SCRIBEFLOW_ALLOWED_SUBJECT": "google-oauth2|example",
+            "GOOGLE_CLOUD_PROJECT": "sample-cloud-project",
+            "SCRIBEFLOW_DEFAULT_FOLDER_ID": "",
+            "SCRIBEFLOW_ALLOWED_FOLDER_IDS": "",
+        }
+        with patch.dict(os.environ, settings):
+            with patch("scribeflow.cloud_gateway.CloudRunJobs") as jobs:
+                create_server()
+        self.assertEqual(jobs.call_args.kwargs["allowed_folder_ids"], ())
+
     def test_http_mcp_rejects_anonymous_calls(self):
         import httpx
 

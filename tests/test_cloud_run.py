@@ -33,6 +33,7 @@ class CloudRunTests(unittest.TestCase):
         self.assertEqual(payload["overrides"]["taskCount"], 1)
         self.assertEqual(payload["overrides"]["containerOverrides"][0]["env"][0],
                          {"name": "SCRIBEFLOW_SOURCE_FILE_ID", "value": "testfile_" + "a" * 22})
+        self.assertEqual(len(payload["overrides"]["containerOverrides"][0]["env"]), 1)
 
     def test_explicit_folder_scope_is_allowlisted(self):
         folder = "folder_" + "a" * 25

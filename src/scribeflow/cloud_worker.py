@@ -21,8 +21,8 @@ def run_job() -> dict:
 
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,}", file_id):
         raise ValueError("SCRIBEFLOW_SOURCE_FILE_ID must be a Google Drive file ID")
-    if not re.fullmatch(r"[A-Za-z0-9_-]{20,}", folder_id):
-        raise ValueError("SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID must be configured")
+    if folder_id and not re.fullmatch(r"[A-Za-z0-9_-]{20,}", folder_id):
+        raise ValueError("SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID is invalid")
     if not os.environ.get("OPENAI_API_KEY"):
         raise ValueError("OPENAI_API_KEY is not configured")
     if not config_secret or not Path(config_secret).is_file():

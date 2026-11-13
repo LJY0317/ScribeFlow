@@ -61,8 +61,8 @@ def create_server():
     default_folder_id = os.environ.get("SCRIBEFLOW_DEFAULT_FOLDER_ID", "")
     other_folders = os.environ.get("SCRIBEFLOW_ALLOWED_FOLDER_IDS", "").split(":")
     allowed = tuple(filter(None, [default_folder_id, *other_folders]))
-    if not allowed or any(not re.fullmatch(r"[A-Za-z0-9_-]{20,}", item) for item in allowed):
-        raise ValueError("An allowed Google Drive folder must be configured")
+    if any(not re.fullmatch(r"[A-Za-z0-9_-]{20,}", item) for item in allowed):
+        raise ValueError("An allowed Google Drive folder ID is invalid")
     backend = CloudRunJobs(CloudRunTarget(
         project=os.environ["GOOGLE_CLOUD_PROJECT"],
         region=os.environ.get("SCRIBEFLOW_REGION", "asia-northeast3"),

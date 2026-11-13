@@ -3,7 +3,7 @@
 # Secrets must already exist in Secret Manager; never put credentials in git.
 set -euo pipefail
 
-for var in GCP_PROJECT SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID SCRIBEFLOW_OAUTH_ISSUER SCRIBEFLOW_ALLOWED_SUBJECT; do
+for var in GCP_PROJECT SCRIBEFLOW_OAUTH_ISSUER SCRIBEFLOW_ALLOWED_SUBJECT; do
   if [[ -z "${!var:-}" ]]; then
     printf 'Missing %s. See docs/cloud-run.md\n' "$var" >&2
     exit 1
@@ -45,7 +45,7 @@ done
 gcloud run jobs deploy "$JOB" --source . --project "$GCP_PROJECT" --region "$REGION" \
   --service-account "$WORKER_SA" --tasks 1 --parallelism 1 \
   --max-retries 0 --task-timeout 3600s --cpu 1 --memory 2Gi \
-  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=worker,SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID=${SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID},SCRIBEFLOW_RCLONE_CONFIG_SECRET=/secrets/rclone.conf" \
+  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=worker,SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID=${SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID:-},SCRIBEFLOW_RCLONE_CONFIG_SECRET=/secrets/rclone.conf" \
   --set-secrets="/secrets/rclone.conf=${RCLONE_SECRET}:latest,OPENAI_API_KEY=${OPENAI_SECRET}:latest"
 
 gcloud run jobs add-iam-policy-binding "$JOB" --project "$GCP_PROJECT" --region "$REGION" \
@@ -59,7 +59,7 @@ gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
 gcloud run deploy "$SERVICE" --source . --project "$GCP_PROJECT" --region "$REGION" \
   --service-account "$GATEWAY_SA" --cpu 1 --memory 512Mi \
   --min-instances 0 --max-instances 1 --no-allow-unauthenticated \
-  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=gateway,GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},SCRIBEFLOW_REGION=${REGION},SCRIBEFLOW_JOB=${JOB},SCRIBEFLOW_DEFAULT_FOLDER_ID=${SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID},SCRIBEFLOW_ALLOWED_FOLDER_IDS=${SCRIBEFLOW_ALLOWED_FOLDER_IDS:-},SCRIBEFLOW_MCP_URL=https://placeholder.invalid,SCRIBEFLOW_OAUTH_ISSUER=${SCRIBEFLOW_OAUTH_ISSUER},SCRIBEFLOW_ALLOWED_SUBJECT=${SCRIBEFLOW_ALLOWED_SUBJECT}"
+  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=gateway,GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},SCRIBEFLOW_REGION=${REGION},SCRIBEFLOW_JOB=${JOB},SCRIBEFLOW_DEFAULT_FOLDER_ID=${SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID:-},SCRIBEFLOW_ALLOWED_FOLDER_IDS=${SCRIBEFLOW_ALLOWED_FOLDER_IDS:-},SCRIBEFLOW_MCP_URL=https://placeholder.invalid,SCRIBEFLOW_OAUTH_ISSUER=${SCRIBEFLOW_OAUTH_ISSUER},SCRIBEFLOW_ALLOWED_SUBJECT=${SCRIBEFLOW_ALLOWED_SUBJECT}"
 
 URL="$(gcloud run services describe "$SERVICE" --project "$GCP_PROJECT" \
   --region "$REGION" --format='value(status.url)')"

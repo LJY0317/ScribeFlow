@@ -30,9 +30,11 @@ Cloud Shell에는 `gcloud`가 설치돼 있으므로 맥북에 SDK를 설치할 
 git clone https://github.com/LJY0317/ScribeFlow.git
 cd ScribeFlow
 export GCP_PROJECT='your-cloud-project-id'
-export SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID='folder_id_for_audio_scope'
+# 선택: 기본값은 연결된 rclone gdrive:의 전체 루트입니다.
+# 특정 폴더로 범위를 제한하려면 다음 변수를 설정하세요.
+# export SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID='folder_id_for_audio_scope'
 # 선택: 추가로 전사가 허용된 여러 폴더 ID를 콜론(:)으로 나열
-export SCRIBEFLOW_ALLOWED_FOLDER_IDS='another_folder_id:one_more_folder_id'
+# export SCRIBEFLOW_ALLOWED_FOLDER_IDS='another_folder_id:one_more_folder_id'
 export SCRIBEFLOW_OAUTH_ISSUER='https://your-tenant.us.auth0.com/'
 export SCRIBEFLOW_ALLOWED_SUBJECT='your-auth0-user-subject'
 # 선택: 이미 만든 Secret Manager 항목 이름이 기본값과 다른 경우
@@ -58,6 +60,14 @@ Console → Security → Secret Manager에서 다음 두 secret을 만듭니다.
 Drive 인증이 만료·폐기되면 이 secret을 업데이트해야 합니다. Job은
 실행 중 쓰기 가능한 사본만 사용하며 변경 내용을 Secret Manager에
 역으로 기록하지 않습니다.
+
+Google Drive 전체를 사용하려면 `SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID`와
+`SCRIBEFLOW_ALLOWED_FOLDER_IDS`를 설정하지 마세요. 그러면 연결된
+`gdrive:`의 기본 루트 아래에서 명시적으로 지정한 파일 ID만 전사합니다.
+전체 Drive를 반복적으로 자동 전사하지는 않습니다. 파일 ID 검색은 현재
+`gdrive:` 루트의 파일을 재귀적으로 조회하므로 Drive가 클수록 시간이 걸립니다.
+`공유 문서함`의 모든 파일이나 별도 공유 드라이브까지 자동 포함되는 것은
+아닙니다. 별도 인증 및 rclone 설정이 필요할 수 있습니다.
 
 ## 3. 클라우드 배포
 
@@ -95,8 +105,9 @@ bash scripts/enable-mcp-access.sh
 ChatGPT 웹의 Plugins에서 `Add custom MCP server`로
 `https://<service-url>/mcp`를 추가해 OAuth 로그인을 완료합니다.
 이후 해당 플러그인에서 `transcribe_audio(file_id)`를 사용합니다.
-기본 폴더 외 음성은 `transcribe_audio(file_id, folder_id)`처럼 폴더 ID를
-함께 전달할 수 있지만, 서버에 설정한 **허용된 폴더만** 접근할 수 있습니다.
+기본 설정은 `transcribe_audio(file_id)`만으로 연결된 Drive 루트에서 찾습니다.
+폴더 접근 범위를 제한해 배포한 경우, 추가 허용된 폴더의 음성은
+`transcribe_audio(file_id, folder_id)`처럼 폴더 ID를 함께 전달할 수 있습니다.
 반환된 `operation`을 `get_transcription_status(operation)`에
 전달해 완료 여부를 확인하세요. 완료된 TXT는 원본 Google Drive 폴더에
 저장됩니다. 실행 로그 링크는 인증된 Google Cloud 콘솔에서 볼 수 있습니다.

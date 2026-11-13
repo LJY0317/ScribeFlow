@@ -47,6 +47,20 @@ class CloudWorkerTests(unittest.TestCase):
                 self.assertFalse(private_paths[0].exists())
                 self.assertEqual(original.read_text(), "[gdrive]\ntype = drive\n")
 
+    def test_entire_drive_requires_no_folder_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config-secret"
+            config.write_text("[gdrive]\ntype = drive\n", encoding="utf-8")
+            with patch.dict(os.environ, {
+                "SCRIBEFLOW_SOURCE_FILE_ID": "audio_" + "a" * 25,
+                "SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID": "",
+                "OPENAI_API_KEY": "fake",
+                "SCRIBEFLOW_RCLONE_CONFIG_SECRET": str(config),
+            }):
+                with patch("scribeflow.cloud_worker.transcribe", return_value={"ok": True}) as transcribe:
+                    self.assertTrue(run_job()["ok"])
+                transcribe.assert_called_once_with("audio_" + "a" * 25)
+
     def test_job_error_does_not_log_secret(self):
         with patch("scribeflow.cloud_worker.run_job", side_effect=RuntimeError("API KEY SECRET")):
             with patch("sys.stderr") as stream:
