@@ -26,3 +26,7 @@ jobs:
         run: uv build
       - name: Build Cloud Run image
         run: docker build --tag scribeflow:ci .
+      - name: Smoke test cloud image dependencies
+        run: |
+          docker run --rm --entrypoint sh scribeflow:ci -c \
+            'rclone version && ffmpeg -version | head -n 1 && python -c "import scribeflow.cloud_entry, scribeflow.cloud_gateway, scribeflow.cloud_worker; print(\"Cloud modules import OK\")"'
