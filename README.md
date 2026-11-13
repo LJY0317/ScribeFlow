@@ -82,6 +82,14 @@ uv run python -m unittest discover -s tests -v
 
 현재 별도의 웹 UI, 화자 자동 식별 또는 AI 요약 모델은 포함하지 않습니다.
 
+### 원격 전사 (선택 기능)
+
+로컬 설치 없이 다른 컴퓨터의 ChatGPT에서 전사 요청을 실행하려면
+[Cloud Run + 인증된 MCP 배포 안내](docs/cloud-run.md)를 참고하세요.
+기존 로컬 CLI는 변경 없이 사용할 수 있습니다. 클라우드 작업은
+Google Cloud 프로젝트·결제·Secret Manager·OAuth 설정을 별도로 필요로
+하며 기본적으로 배포되지 않습니다.
+
 ## 제거 및 잔여 파일
 
 소스 폴더에서 사용했다면 최종 전사문을 제외한 ScribeFlow 전용 로컬 작업 파일은 `.scribeflow/`와 `.venv/` 등에 모입니다. 먼저 실행 중인 작업이 없는지 확인하고, 아래 명령으로 **ScribeFlow 전용 키체인 항목**을 지운 뒤 프로젝트 폴더를 삭제하면 됩니다.

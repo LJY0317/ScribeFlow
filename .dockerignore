@@ -1,0 +1,17 @@
+.git
+.github
+.venv
+.scribeflow
+dist
+build
+.env*
+*.txt
+*.m4a
+*.mp3
+*.wav
+*.mp4
+*.pem
+*.key
+rclone.conf
+__pycache__
+tests
