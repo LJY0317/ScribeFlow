@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import shutil
+import tempfile
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -13,14 +14,18 @@ from pathlib import Path
 from .credentials import get_api_key
 
 MODEL = "gpt-transcribe"
-MAX_UPLOAD_BYTES = 24_000_000  # 1 MB headroom below the 25 MB API limit.
-BITRATE_KBPS = 128  # Preserve adequate stereo speech quality when possible.
-BITRATE = f"{BITRATE_KBPS}k"
+MAX_UPLOAD_BYTES = 25_000_000  # OpenAI file limit in bytes.
+CHUNK_TARGET_BYTES = 24_000_000  # Headroom for stream-copied container overhead.
+SUPPORTED_AUDIO_SUFFIXES = frozenset({
+    ".flac", ".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".ogg", ".wav", ".webm",
+})
 
 
-def auto_chunk_seconds() -> int:
-    """Largest conservative chunk at our fixed MP3 bitrate under 24 MB."""
-    return int((MAX_UPLOAD_BYTES * 8 / (BITRATE_KBPS * 1000)) * 0.97)
+def auto_chunk_seconds(duration: float, size_bytes: int) -> int:
+    """Estimate a safe copy-only chunk length from the real file size."""
+    if size_bytes <= MAX_UPLOAD_BYTES:
+        return max(1, int(duration) + 1)
+    return max(1, int(duration * CHUNK_TARGET_BYTES / size_bytes * 0.85))
 
 
 @dataclass(frozen=True)
@@ -88,8 +93,8 @@ def plan_chunks(
 ) -> list[Chunk]:
     if not (duration > 0):
         raise ValueError("녹음 길이는 0보다 커야 합니다.")
-    if chunk_seconds < 30:
-        raise ValueError("구간 길이는 최소 30초입니다.")
+    if chunk_seconds < 1:
+        raise ValueError("구간 길이는 최소 1초입니다.")
     if not (0 <= overlap_seconds < chunk_seconds / 4):
         raise ValueError("겹침은 구간 길이의 1/4 미만이어야 합니다.")
 
@@ -145,7 +150,7 @@ def plan_audio_chunks(
     """Minimize splits, prefer silence, retain overlap for active speech."""
     if duration <= chunk_seconds:
         return plan_chunks(duration, chunk_seconds, overlap_seconds)
-    if chunk_seconds < 30 or overlap_seconds < 0 or overlap_seconds >= chunk_seconds / 4:
+    if chunk_seconds < 1 or overlap_seconds < 0 or overlap_seconds >= chunk_seconds / 4:
         raise ValueError("잘못된 전사 분할 설정입니다.")
     result: list[Chunk] = []
     start = 0.0
@@ -155,8 +160,8 @@ def plan_audio_chunks(
             end = duration
             next_start = end
         else:
-            cut = detect_silence_cut(source, desired_end)
-            if cut is not None and cut > start + 30:
+            cut = detect_silence_cut(source, desired_end) if chunk_seconds >= 60 else None
+            if cut is not None and cut > start + min(30, chunk_seconds / 4):
                 end = cut
                 next_start = end
             else:
@@ -188,28 +193,63 @@ def write_text_atomic(path: Path, content: str) -> None:
 
 
 def render_chunk(source: Path, chunk: Chunk, destination: Path) -> None:
-    """Transcode the first audio track to a bounded MP3, preserving channels."""
-    temp = destination.with_name(destination.stem + ".part.mp3")
+    """Copy encoded audio packets into a standalone chunk; never re-encode."""
+    temp = destination.with_name(destination.stem + ".part" + destination.suffix)
     try:
         subprocess.run(
             [
                 "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
                 "-y", "-ss", str(chunk.start), "-i", str(source),
                 "-t", str(chunk.duration), "-map", "0:a:0",
-                "-vn", "-sn", "-dn",
-                "-c:a", "libmp3lame", "-b:a", BITRATE, str(temp),
+                "-vn", "-sn", "-dn", "-c:a", "copy", str(temp),
             ],
             check=True, capture_output=True, text=True,
         )
-        if temp.stat().st_size > MAX_UPLOAD_BYTES:
-            raise ValueError(
-                f"{chunk.name}번 구간이 API 요청 크기를 초과합니다. "
-                "--chunk-seconds 값을 줄여 새 출력 폴더에서 다시 실행하세요."
-            )
+        if not temp.is_file() or temp.stat().st_size <= 0:
+            raise ValueError(f"{chunk.name}번 구간이 비어 있습니다.")
         temp.replace(destination)
     finally:
         if temp.exists():
             temp.unlink()
+
+
+def prepare_stream_copy_chunks(
+    source: Path, duration: float, initial_seconds: int,
+    overlap_seconds: int, destination: Path,
+) -> list[Chunk]:
+    """Preflight every chunk's actual bytes before making any paid API calls.
+
+    For VBR audio or high-overhead containers, shrink the planned duration and
+    try again. The source packets are copied unchanged; there is no lossy
+    conversion or audio re-encoding.
+    """
+    seconds = initial_seconds
+    with tempfile.TemporaryDirectory(prefix="scribeflow-copy-") as directory:
+        scratch = Path(directory)
+        while True:
+            for previous in scratch.iterdir():
+                previous.unlink()
+            # Short chunks cannot accommodate a full three-second overlap.
+            effective_overlap = min(overlap_seconds, max(0, (seconds - 1) // 4))
+            chunks = plan_audio_chunks(source, duration, seconds, effective_overlap)
+            oversized = False
+            for chunk in chunks:
+                path = scratch / f"{chunk.name}{source.suffix.lower()}"
+                render_chunk(source, chunk, path)
+                if path.stat().st_size > CHUNK_TARGET_BYTES:
+                    oversized = True
+                    break
+            if not oversized:
+                destination.mkdir(parents=True, exist_ok=True)
+                for path in scratch.iterdir():
+                    path.replace(destination / path.name)
+                return chunks
+            if seconds == 1:
+                raise ValueError(
+                    "무재인코딩 1초 구간도 업로드 한도를 초과합니다. "
+                    "원본을 자동으로 손실 재인코딩하지 않습니다."
+                )
+            seconds = max(1, int(seconds * 0.75))
 
 
 def clock(seconds: float) -> str:
@@ -224,7 +264,7 @@ def transcribe_file(
     overlap_seconds: int = 3, language: str = "ko",
     keywords: tuple[str, ...] = (), prompt: str = "",
 ) -> Path:
-    """Resume completed chunks and preserve original audio unchanged."""
+    """Transcribe the original file when possible, otherwise stream-copy chunks."""
     api_key = get_api_key()
     if not api_key:
         raise RuntimeError(
@@ -235,53 +275,77 @@ def transcribe_file(
     source = source.expanduser().resolve(strict=True)
     output = output.expanduser().resolve()
     info = inspect_audio(source)
-    if chunk_seconds is None:
-        chunk_seconds = auto_chunk_seconds()
-    chunks = plan_audio_chunks(source, info["duration_seconds"], chunk_seconds, overlap_seconds)
+    if source.suffix.lower() not in SUPPORTED_AUDIO_SUFFIXES:
+        raise ValueError(
+            f"OpenAI 전사 API가 지원하지 않는 파일 형식입니다: {source.suffix}. "
+            "ScribeFlow는 손실 재인코딩을 자동으로 하지 않습니다."
+        )
+    if chunk_seconds is not None and chunk_seconds < 1:
+        raise ValueError("구간 길이는 최소 1초입니다.")
+    if overlap_seconds < 0:
+        raise ValueError("겹침 길이는 0초 이상이어야 합니다.")
+
+    direct = info["size_bytes"] <= MAX_UPLOAD_BYTES and (
+        chunk_seconds is None or chunk_seconds >= info["duration_seconds"]
+    )
     source_sha256 = hash_file(source)
-    config = {
-        "schema": 1,
+    base_config = {
+        "schema": 2,
         "source_filename": source.name,
         "source_sha256": source_sha256,
         "source_size": info["size_bytes"],
         "duration_seconds": info["duration_seconds"],
         "model": MODEL,
-        "encoding": f"MP3/{BITRATE_KBPS}kbps",
+        "encoding": "original" if direct else "stream-copy",
         "language": language,
         "keywords": list(keywords),
         "prompt": prompt,
         "chunk_seconds": chunk_seconds,
         "overlap_seconds": overlap_seconds,
-        "chunks": [chunk.as_dict() for chunk in chunks],
     }
     manifest = output / "manifest.json"
-    if output.exists() and any(output.iterdir()) and not manifest.exists():
-        raise ValueError("출력 폴더에 다른 파일이 있습니다. 빈 폴더를 지정하세요.")
+    chunk_dir = output / "audio_chunks"
+    text_dir = output / "transcripts"
+
     if manifest.exists():
         previous = json.loads(manifest.read_text(encoding="utf-8"))
-        if config != previous:
+        chunks = [Chunk(**data) for data in previous.get("chunks", [])]
+        config = {**base_config, "chunks": [chunk.as_dict() for chunk in chunks]}
+        if not chunks or config != previous:
             raise ValueError(
                 "이 출력 폴더의 원본 파일 또는 전사 설정이 다릅니다. "
                 "다른 출력 폴더를 사용하세요."
             )
     else:
+        if output.exists() and any(output.iterdir()):
+            raise ValueError("출력 폴더에 다른 파일이 있습니다. 빈 폴더를 지정하세요.")
+        if direct:
+            chunks = [Chunk(1, 0.0, round(info["duration_seconds"], 3))]
+        else:
+            seconds = chunk_seconds if chunk_seconds is not None else auto_chunk_seconds(
+                info["duration_seconds"], info["size_bytes"]
+            )
+            chunks = prepare_stream_copy_chunks(
+                source, info["duration_seconds"], seconds,
+                overlap_seconds, chunk_dir,
+            )
+        config = {**base_config, "chunks": [chunk.as_dict() for chunk in chunks]}
         output.mkdir(parents=True, exist_ok=True)
         write_text_atomic(manifest, json.dumps(config, ensure_ascii=False, indent=2))
 
-    chunk_dir = output / "audio_chunks"
-    text_dir = output / "transcripts"
     chunk_dir.mkdir(exist_ok=True)
     text_dir.mkdir(exist_ok=True)
 
-    # Delay SDK import and client creation until actually needed.
     client = None
     for chunk in chunks:
         text_path = text_dir / (chunk.name + ".txt")
         if text_path.exists():
             print(f"[{chunk.index}/{len(chunks)}] 기존 전사문 재사용", file=sys.stderr)
             continue
-        audio_path = chunk_dir / (chunk.name + ".mp3")
-        if not audio_path.exists():
+        audio_path = (
+            source if direct else chunk_dir / f"{chunk.name}{source.suffix.lower()}"
+        )
+        if not direct and not audio_path.exists():
             render_chunk(source, chunk, audio_path)
         if not (0 < audio_path.stat().st_size <= MAX_UPLOAD_BYTES):
             raise ValueError(f"{chunk.index}번 오디오 구간 크기가 유효하지 않습니다.")
