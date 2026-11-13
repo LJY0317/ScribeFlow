@@ -105,7 +105,7 @@ ChatGPT의 접근 허용(Allow Access)을 승인하고 **4단계의 Google 계�
 
 ## 6. 사용 · 시험 · 운영
 
-- `transcribe_audio(file_id)`: Google Drive의 음성 파일 ID **한 개**를 받아 전사 작업을 시작하며 OpenAI API 사용료가 발생합니다.
+- `transcribe_audio(file_id, keywords=None, prompt="")`: Google Drive 음성 파일 ID **한 개**를 받아 전사 작업을 시작하며 OpenAI API 사용료가 발생합니다. 필요한 경우 `keywords`에 최대 20개의 고유명사·전문용어를, `prompt`에 500자 이내의 짧은 녹음 맥락을 전달할 수 있습니다. 둘 다 생략 가능하며 기본 전사 동작은 기존과 같습니다. 실제 발언을 지어내는 프롬프트를 제공하지 마세요.
 - `get_transcription_status(operation)`: 실행 상태(`running` / `completed` / `failed`)를 조회합니다. 상태 조회는 새 전사를 시작하지 않습니다.
 
 ID는 `https://drive.google.com/file/d/FILE_ID/view`에서 확인합니다. **ScribeFlow MCP 자체는 Google Drive 파일명 검색 도구가 없으므로** ChatGPT가 “SSAFY 폴더의 녹음”만으로 찾으려면 별도 Google Drive 연결이나 파일 링크가 필요합니다. 이미 동명 TXT가 있으면 SHA-256 일치 시 `skipped_existing`, 미확인·불일치 시에도 덮어쓰지 않습니다.
