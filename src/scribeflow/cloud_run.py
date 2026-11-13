@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -10,6 +11,31 @@ from typing import Any
 _FILE_ID = re.compile(r"[A-Za-z0-9_-]{20,}")
 _GOOGLE_ID = re.compile(r"[a-z][a-z0-9-]{2,62}")
 _REGION = re.compile(r"[a-z]+-[a-z]+[0-9]+")
+
+
+def normalize_transcription_context(
+    keywords: list[str] | tuple[str, ...] | None = None,
+    prompt: str = "",
+) -> tuple[tuple[str, ...], str]:
+    """Validate optional literal vocabulary and brief factual recording context."""
+    if keywords is None:
+        keywords = ()
+    if not isinstance(keywords, (list, tuple)) or len(keywords) > 20:
+        raise ValueError("At most 20 transcription keywords are allowed")
+    normalized = []
+    for term in keywords:
+        if not isinstance(term, str):
+            raise ValueError("Transcription keywords must be strings")
+        term = term.strip()
+        if not term or len(term) > 80 or any(ord(ch) < 32 for ch in term):
+            raise ValueError("Each keyword must be a single nonempty term (up to 80 characters)")
+        normalized.append(term)
+    if not isinstance(prompt, str):
+        raise ValueError("Transcription prompt must be text")
+    prompt = prompt.strip()
+    if len(prompt) > 500 or any(ord(ch) < 32 for ch in prompt):
+        raise ValueError("Transcription context must be one line (up to 500 characters)")
+    return tuple(normalized), prompt
 
 
 @dataclass(frozen=True)
@@ -53,11 +79,22 @@ class CloudRunJobs:
         response.raise_for_status()
         return response.json()
 
-    def start(self, file_id: str) -> dict:
-        """Queue exactly one job without downloading private Drive content."""
+    def start(
+        self, file_id: str, keywords: list[str] | tuple[str, ...] | None = None,
+        prompt: str = "",
+    ) -> dict:
+        """Queue one job with optional vocabulary/context; no audio in gateway."""
         if not _FILE_ID.fullmatch(file_id):
             raise ValueError("A valid Google Drive file ID is required")
+        terms, context = normalize_transcription_context(keywords, prompt)
         variables = [{"name": "SCRIBEFLOW_SOURCE_FILE_ID", "value": file_id}]
+        if terms:
+            variables.append({
+                "name": "SCRIBEFLOW_KEYWORDS_JSON",
+                "value": json.dumps(terms, ensure_ascii=False),
+            })
+        if context:
+            variables.append({"name": "SCRIBEFLOW_PROMPT", "value": context})
         operation = self._call("POST", self.target.resource + ":run", payload={
             "overrides": {
                 "containerOverrides": [{
