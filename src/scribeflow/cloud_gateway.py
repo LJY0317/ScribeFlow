@@ -1,104 +1,58 @@
-"""Authenticated, stateless remote MCP entrypoint for Cloud Run."""
+"""Remote ScribeFlow MCP service protected by an unguessable endpoint path.
+
+Anyone holding the full MCP URL can call its tools. Keep the URL private and
+rotate its Secret Manager value if it is exposed.
+"""
 
 from __future__ import annotations
 
 import os
 import re
-from urllib.parse import urlparse
 
 from .cloud_run import CloudRunJobs, CloudRunTarget
 
 
-class VerifiedOAuthToken:
-    """Validate Auth0 JWT signature, issuer, audience, scope and user identity."""
-
-    def __init__(self, issuer: str, audience: str, allowed_subject: str, scope: str):
-        import jwt
-        self.jwt = jwt
-        self.issuer = issuer if issuer.endswith("/") else issuer + "/"
-        self.audience = audience
-        self.allowed_subject = allowed_subject
-        self.scope = scope
-        self.jwks = jwt.PyJWKClient(self.issuer + ".well-known/jwks.json")
-
-    async def verify_token(self, token: str):
-        from mcp.server.auth.provider import AccessToken
-        try:
-            key = self.jwks.get_signing_key_from_jwt(token).key
-            claims = self.jwt.decode(
-                token, key, algorithms=["RS256"],
-                issuer=self.issuer, audience=self.audience,
-                options={"require": ["iss", "aud", "exp", "sub"]},
-            )
-        except (self.jwt.PyJWTError, OSError, ValueError):
-            return None
-        scopes = str(claims.get("scope", "")).split()
-        if claims.get("sub") != self.allowed_subject or self.scope not in scopes:
-            return None
-        return AccessToken(
-            token=token, client_id=claims.get("azp", "oauth-client"),
-            scopes=scopes, expires_at=int(claims["exp"]),
-            resource=self.audience, subject=claims["sub"], claims=claims,
-        )
+_ACCESS_TOKEN = re.compile(r"[A-Za-z0-9_-]{40,128}")
 
 
 def create_server():
-    """Fail closed: the server never exposes paid tools without OAuth config."""
-    from mcp.server.auth.settings import AuthSettings
     from mcp.server.fastmcp import FastMCP
     from mcp.types import ToolAnnotations
 
-    url = os.environ.get("SCRIBEFLOW_MCP_URL", "").rstrip("/")
-    issuer = os.environ.get("SCRIBEFLOW_OAUTH_ISSUER", "")
-    subject = os.environ.get("SCRIBEFLOW_ALLOWED_SUBJECT", "")
-    scope = "transcribe:write"
-    if not url.startswith("https://") or urlparse(url).path not in {"", "/"}:
-        raise ValueError("SCRIBEFLOW_MCP_URL must be the HTTPS service origin")
-    if not issuer.startswith("https://") or not subject:
-        raise ValueError("OAuth issuer and allowed subject must be configured")
-    resource_url = url + "/mcp"
-    verifier = VerifiedOAuthToken(issuer, resource_url, subject, scope)
-    default_folder_id = os.environ.get("SCRIBEFLOW_DEFAULT_FOLDER_ID", "")
-    other_folders = os.environ.get("SCRIBEFLOW_ALLOWED_FOLDER_IDS", "").split(":")
-    allowed = tuple(filter(None, [default_folder_id, *other_folders]))
-    if any(not re.fullmatch(r"[A-Za-z0-9_-]{20,}", item) for item in allowed):
-        raise ValueError("An allowed Google Drive folder ID is invalid")
+    access_token = os.environ.get("SCRIBEFLOW_MCP_ACCESS_TOKEN", "")
+    if not _ACCESS_TOKEN.fullmatch(access_token):
+        raise ValueError("ScribeFlow MCP access token is missing or invalid")
+
     backend = CloudRunJobs(CloudRunTarget(
         project=os.environ["GOOGLE_CLOUD_PROJECT"],
         region=os.environ.get("SCRIBEFLOW_REGION", "asia-northeast3"),
         job=os.environ.get("SCRIBEFLOW_JOB", "scribeflow-transcribe"),
-    ), allowed_folder_ids=allowed)
+    ))
     server = FastMCP(
         "ScribeFlow", host="0.0.0.0", port=int(os.environ.get("PORT", "8080")),
+        streamable_http_path=f"/{access_token}/mcp",
         stateless_http=True, json_response=True,
-        token_verifier=verifier,
-        auth=AuthSettings(
-            issuer_url=issuer, resource_server_url=resource_url,
-            required_scopes=[scope], validate_token_resource=True,
-        ),
     )
-    oauth = {"securitySchemes": [{"type": "oauth2", "scopes": [scope]}]}
 
     @server.tool(
         description=(
-            "Transcribe a specifically requested Google Drive audio file. "
-            "Uses the paid OpenAI transcription API; never batch-submit music."
+            "Transcribe one explicitly requested Google Drive audio file. "
+            "Uses paid OpenAI transcription credits; never batch-submit music."
         ),
-        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False,
-                                    openWorldHint=False),
-        meta=oauth,
+        annotations=ToolAnnotations(
+            readOnlyHint=False, destructiveHint=False, openWorldHint=False
+        ),
     )
-    def transcribe_audio(file_id: str, folder_id: str = "") -> dict:
-        """Start one transcription; returns an operation to check later."""
-        return backend.start(file_id, folder_id)
+    def transcribe_audio(file_id: str) -> dict:
+        """Submit a single transcription and return the operation ID."""
+        return backend.start(file_id)
 
     @server.tool(
-        description="Check an existing ScribeFlow transcription without starting another job.",
+        description="Check the status of one previously submitted transcription.",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
-        meta=oauth,
     )
     def get_transcription_status(operation: str) -> dict:
-        """Get pending/completed/failed status for a submitted execution."""
+        """Check status without making another transcription request."""
         return backend.status(operation)
 
     return server

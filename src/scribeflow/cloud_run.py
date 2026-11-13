@@ -36,12 +36,8 @@ class CloudRunTarget:
 
 
 class CloudRunJobs:
-    def __init__(
-        self, target: CloudRunTarget, session: Any = None,
-        *, allowed_folder_ids: tuple[str, ...] = (),
-    ):
+    def __init__(self, target: CloudRunTarget, session: Any = None):
         self.target = target
-        self.allowed_folder_ids = allowed_folder_ids
         if session is None:
             import google.auth
             from google.auth.transport.requests import AuthorizedSession
@@ -57,20 +53,11 @@ class CloudRunJobs:
         response.raise_for_status()
         return response.json()
 
-    def start(self, file_id: str, folder_id: str = "") -> dict:
+    def start(self, file_id: str) -> dict:
         """Queue exactly one job without downloading private Drive content."""
         if not _FILE_ID.fullmatch(file_id):
             raise ValueError("A valid Google Drive file ID is required")
-        if folder_id and (
-            not _FILE_ID.fullmatch(folder_id)
-            or folder_id not in self.allowed_folder_ids
-        ):
-            raise ValueError("The requested folder is not in ScribeFlow's allowed folders")
         variables = [{"name": "SCRIBEFLOW_SOURCE_FILE_ID", "value": file_id}]
-        if folder_id:
-            variables.append({
-                "name": "SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID", "value": folder_id,
-            })
         operation = self._call("POST", self.target.resource + ":run", payload={
             "overrides": {
                 "containerOverrides": [{

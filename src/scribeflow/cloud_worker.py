@@ -16,13 +16,10 @@ from .pipeline import transcribe
 def run_job() -> dict:
     """Run one transcription; credentials are injected at deployment time."""
     file_id = os.environ.get("SCRIBEFLOW_SOURCE_FILE_ID", "").strip()
-    folder_id = os.environ.get("SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID", "").strip()
     config_secret = os.environ.get("SCRIBEFLOW_RCLONE_CONFIG_SECRET", "").strip()
 
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,}", file_id):
         raise ValueError("SCRIBEFLOW_SOURCE_FILE_ID must be a Google Drive file ID")
-    if folder_id and not re.fullmatch(r"[A-Za-z0-9_-]{20,}", folder_id):
-        raise ValueError("SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID is invalid")
     if not os.environ.get("OPENAI_API_KEY"):
         raise ValueError("OPENAI_API_KEY is not configured")
     if not config_secret or not Path(config_secret).is_file():
