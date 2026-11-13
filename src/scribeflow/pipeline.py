@@ -79,17 +79,36 @@ def resolve_source(source: str) -> str:
     file_id = _drive_file_id(source)
     if file_id is None:
         return source
-    entries = json.loads(
-        run_rclone("lsjson", "gdrive:", "-R", "--files-only").stdout
-    )
-    found = [e for e in entries if e.get("ID") == file_id and not e.get("IsDir")]
-    if not found:
+
+    def find() -> dict | None:
+        entries = json.loads(
+            run_rclone("lsjson", "gdrive:", "-R", "--files-only").stdout
+        )
+        return next(
+            (entry for entry in entries
+             if entry.get("ID") == file_id and not entry.get("IsDir")),
+            None,
+        )
+
+    metadata = None
+    shared_before = os.environ.get("RCLONE_DRIVE_SHARED_WITH_ME")
+    # A shared-with-me folder isn't included in the normal My Drive root.
+    # A worker processes one file, so keep the matching rclone view for its
+    # subsequent download, transcript lookup, and upload.
+    if not os.environ.get("SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID") and shared_before is None:
+        os.environ["RCLONE_DRIVE_SHARED_WITH_ME"] = "true"
+        try:
+            metadata = find()
+        finally:
+            if metadata is None:
+                os.environ.pop("RCLONE_DRIVE_SHARED_WITH_ME", None)
+    if metadata is None:
+        metadata = find()
+    if metadata is None:
         raise FileNotFoundError(
             "Google Drive 파일 ID를 현재 rclone 연결에서 찾지 못했습니다. "
-            "다른 폴더에 있는 경우 SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID를 "
-            "해당 폴더 또는 상위 폴더 ID로 설정하세요."
+            "설정된 Drive 계정과 공유 권한을 확인하세요."
         )
-    metadata = found[0]
     if not (
         str(metadata.get("MimeType", "")).startswith("audio/")
         or Path(metadata["Path"]).suffix.lower() in {
