@@ -1,65 +1,109 @@
-"""Remote ScribeFlow MCP service protected by an unguessable endpoint path.
-
-Anyone holding the full MCP URL can call its tools. Keep the URL private and
-rotate its Secret Manager value if it is exposed.
-"""
+"""Google-account OAuth protection for the remote ScribeFlow MCP service."""
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import logging
 import os
-import re
 
 from .cloud_run import CloudRunJobs, CloudRunTarget
 
 
-_ACCESS_TOKEN = re.compile(r"[A-Za-z0-9_-]{40,128}")
+def _require_owner(allowed_email: str) -> None:
+    """Prevent other Google accounts from triggering paid or Drive operations."""
+    from fastmcp.server.dependencies import get_access_token
+
+    token = get_access_token()
+    claims = token.claims if token else {}
+    verified = claims.get("email_verified")
+    if (
+        not token
+        or (claims.get("email") or "").casefold() != allowed_email.casefold()
+        or verified not in (True, "true", "True", "1")
+        or not claims.get("sub")
+    ):
+        raise PermissionError("This Google account is not authorized for ScribeFlow")
 
 
 def create_server():
-    from mcp.server.fastmcp import FastMCP
+    from cryptography.fernet import Fernet
+    from fastmcp import FastMCP
+    from fastmcp.server.auth.providers.google import GoogleProvider
+    from key_value.aio.stores.firestore import (
+        FirestoreStore,
+        FirestoreV1CollectionSanitizationStrategy,
+        FirestoreV1KeySanitizationStrategy,
+    )
+    from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
     from mcp.types import ToolAnnotations
 
-    access_token = os.environ.get("SCRIBEFLOW_MCP_ACCESS_TOKEN", "")
-    if not _ACCESS_TOKEN.fullmatch(access_token):
-        raise ValueError("ScribeFlow MCP access token is missing or invalid")
-
+    # Cloud Run scales to zero; OAuth registrations and tokens must persist.
+    origin = os.environ["SCRIBEFLOW_MCP_URL"].rstrip("/")
+    owner_email = os.environ["SCRIBEFLOW_GOOGLE_EMAIL"].strip()
+    client_id = os.environ["SCRIBEFLOW_GOOGLE_CLIENT_ID"]
+    client_secret = os.environ["SCRIBEFLOW_GOOGLE_CLIENT_SECRET"]
+    seed = os.environ["SCRIBEFLOW_OAUTH_SEED"]
+    if not origin.startswith("https://") or not owner_email or len(seed) < 40:
+        raise ValueError("Google OAuth configuration is incomplete")
+    material = seed.encode("utf-8")
+    jwt_key = hashlib.sha256(b"scribeflow-jwt-v1:" + material).digest()
+    fernet_key = base64.urlsafe_b64encode(
+        hashlib.sha256(b"scribeflow-storage-v1:" + material).digest()
+    )
+    store = FernetEncryptionWrapper(
+        key_value=FirestoreStore(
+            project=os.environ["GOOGLE_CLOUD_PROJECT"],
+            database="scribeflow-oauth",
+            default_collection="scribeflow_oauth",
+            key_sanitization_strategy=FirestoreV1KeySanitizationStrategy(),
+            collection_sanitization_strategy=FirestoreV1CollectionSanitizationStrategy(),
+        ),
+        fernet=Fernet(fernet_key),
+    )
+    auth = GoogleProvider(
+        client_id=client_id,
+        client_secret=client_secret,
+        base_url=origin,
+        required_scopes=["openid", "https://www.googleapis.com/auth/userinfo.email"],
+        jwt_signing_key=jwt_key,
+        client_storage=store,
+        require_authorization_consent=True,
+    )
     backend = CloudRunJobs(CloudRunTarget(
         project=os.environ["GOOGLE_CLOUD_PROJECT"],
         region=os.environ.get("SCRIBEFLOW_REGION", "asia-northeast3"),
         job=os.environ.get("SCRIBEFLOW_JOB", "scribeflow-transcribe"),
     ))
-    server = FastMCP(
-        "ScribeFlow", host="0.0.0.0", port=int(os.environ.get("PORT", "8080")),
-        streamable_http_path=f"/{access_token}/mcp",
-        stateless_http=True, json_response=True,
-    )
+    server = FastMCP("ScribeFlow", auth=auth)
 
     @server.tool(
-        description=(
-            "Transcribe one explicitly requested Google Drive audio file. "
-            "Uses paid OpenAI transcription credits; never batch-submit music."
-        ),
-        annotations=ToolAnnotations(
-            readOnlyHint=False, destructiveHint=False, openWorldHint=False
-        ),
+        description="Transcribe one Google Drive audio by file ID; incurs OpenAI API charges.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False),
     )
     def transcribe_audio(file_id: str) -> dict:
-        """Submit a single transcription and return the operation ID."""
+        _require_owner(owner_email)
         return backend.start(file_id)
 
     @server.tool(
-        description="Check the status of one previously submitted transcription.",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+        description="Check a submitted transcription without restarting it.",
+        annotations=ToolAnnotations(readOnlyHint=True),
     )
     def get_transcription_status(operation: str) -> dict:
-        """Check status without making another transcription request."""
+        _require_owner(owner_email)
         return backend.status(operation)
 
     return server
 
 
 def main() -> None:
-    create_server().run(transport="streamable-http")
+    # Tokens and Drive credentials must not be written to logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpx2").setLevel(logging.WARNING)
+    create_server().run(
+        transport="http", host="0.0.0.0",
+        port=int(os.environ.get("PORT", "8080")), stateless_http=True,
+    )
 
 
 if __name__ == "__main__":

@@ -1,81 +1,74 @@
-# ScribeFlow on Google Cloud Run
+# Google Cloud ScribeFlow — ChatGPT 연결 1개
 
-ChatGPT와 Google Cloud만 이용하는 개인용 원격 전사 구성입니다. 사용자 요청으로 지정한
-Google Drive 음성 파일 **하나**를 Cloud Run Job이 OpenAI `gpt-transcribe`로 전사하고
-원본과 같은 Drive 폴더에 SHA-256 검증용 TXT를 저장합니다.
+Google Cloud Run의 MCP 서버가 전사 요청을 받으면 Cloud Run Job이 **선택한 Drive 음성 파일 한 개**를 처리합니다. 기존 OpenAI API와 rclone Drive 인증을 재사용해 결과 TXT를 원본 폴더에 저장합니다. 추가 인증 업체나 다른 컴퓨터에 설치할 프로그램은 없습니다.
 
-## 구성과 주의사항
+## 첫 설치
 
-- 신규 인증 업체(Auth0 등)는 필요하지 않습니다. 다만 ChatGPT의 *No authentication*
-  MCP 연결은 임의 API 키 헤더를 지원하지 않아, 별도로 생성한 **추측 불가능한
-  비밀 URL**을 서버 접근 키처럼 사용합니다.
-- **URL을 아는 사람은 누구나 전사를 요청할 수 있습니다.** URL을 절대 채팅,
-  GitHub, 공개 스크린샷 등에 게시하지 마세요. 유출 시 Secret Manager의
-  `scribeflow-mcp-access-token` 비밀을 교체한 뒤 서비스를 재배포하고
-  ChatGPT 연결도 갱신해야 합니다. URL 경로는 Google Cloud 요청 로그에도
-  나타날 수 있습니다.
-- 이 방식은 Google 계정의 사용자를 직접 검증하는 OAuth가 아닙니다.
-  본인만 사용하는 개인 플러그인용 절충안입니다.
-- Cloud Run Service는 0개의 최소 인스턴스, 1개의 최대 인스턴스이며 Job은
-  1회 1작업, 자동 재시도 0입니다. Job 배포만으로 음성 전사를 시작하지 않습니다.
-- Cloud Build, Artifact Registry, Secret Manager, Cloud Run, OpenAI API 사용료가
-  발생할 수 있습니다. Google Cloud 예산은 OpenAI API 비용을 제한하지 않습니다.
-
-## 사전 준비
-
-Google Cloud Shell에서 프로젝트를 선택하고 ScribeFlow 코드를 받습니다.
+기존 Google Cloud 프로젝트에서 `gcloud` 인증된 **Cloud Shell**을 사용합니다.
 
 ```bash
-git clone https://github.com/LJY0317/ScribeFlow.git
-cd ScribeFlow
+cd ~/ScribeFlow
 export GCP_PROJECT='YOUR_PROJECT_ID'
-# 이미 만들어 둔 Secret Manager 이름이 기본값과 다르면 설정
-export SCRIBEFLOW_OPENAI_SECRET='YOUR_OPENAI_SECRET_NAME'
-export SCRIBEFLOW_RCLONE_SECRET='YOUR_RCLONE_SECRET_NAME'
+export SCRIBEFLOW_OPENAI_SECRET='YOUR_EXISTING_OPENAI_SECRET_NAME'
+export SCRIBEFLOW_RCLONE_SECRET='YOUR_EXISTING_RCLONE_SECRET_NAME'
 ```
 
-Secret Manager에 미리 등록할 항목은 다음 두 개입니다.
+1. **Google OAuth용 주소 확인:** Cloud Shell에서 아래 명령으로 서버 주소를 확인합니다. 아직 배포하지 않아도 주소를 알 수 있습니다.
 
-- OpenAI API 키 (기본 이름: `scribeflow-openai-api-key`)
-- `[gdrive]` 항목만 포함하는 rclone 설정 (기본 이름: `scribeflow-rclone-config`).
-  기존 rclone 파일의 다른 연결/토큰은 공유하지 마세요.
+   ```bash
+   echo "https://scribeflow-mcp-$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)').asia-northeast3.run.app"
+   ```
 
-## 배포
+2. [Google Auth Platform](https://console.cloud.google.com/auth/overview)에서 **브랜딩/대상(Audience)** 을 설정합니다. 개인 Google 계정은 `External` + 테스트 사용자로 본인의 Google 계정을 추가할 수 있습니다. **Clients → Create Client → Web application**을 선택해 `ScribeFlow` 클라이언트를 생성합니다.
+
+   - Authorized JavaScript origins: 위에서 확인한 `https://...run.app` 주소
+   - Authorized redirect URI: 같은 주소 뒤에 `/auth/callback` 추가
+   - OAuth 요청 권한: `openid`, `userinfo.email`만 사용합니다. ScribeFlow는 여기서 Google Drive 접근을 요청하지 않습니다.
+
+3. 발급된 **Client ID**를 다음 환경변수에 입력합니다. 사용하는 **본인 Google 계정 이메일**도 입력합니다. 이 계정 외에는 유료 전사 도구를 호출할 수 없습니다.
+
+   ```bash
+   export SCRIBEFLOW_GOOGLE_CLIENT_ID='CLIENT_ID.apps.googleusercontent.com'
+   export SCRIBEFLOW_GOOGLE_EMAIL='YOUR_GOOGLE_LOGIN_EMAIL'
+   ```
+
+4. 발급된 **Client Secret**은 채팅이나 코드가 아니라 Google Cloud Secret Manager에 저장합니다. 아래 명령어의 `read` 프롬프트에만 비밀값을 붙여넣으세요. 입력한 값은 화면에 표시되지 않습니다. 기존에 만든 OpenAI/rclone 비밀은 건드리지 않습니다.
+
+   ```bash
+   read -r -s -p 'Google OAuth Client Secret: ' GOOGLE_CLIENT_SECRET; echo
+   printf '%s' "$GOOGLE_CLIENT_SECRET" | gcloud secrets create scribeflow-google-client-secret \
+     --replication-policy=automatic --data-file=- --project="$GCP_PROJECT"
+   unset GOOGLE_CLIENT_SECRET
+   ```
+
+5. 한 번만 배포합니다. 스크립트가 별도의 OAuth 키를 Secret Manager에 생성하고, ScribeFlow 전용 Firestore 데이터베이스 `scribeflow-oauth`를 만들며, **외부 접근이 막힌 상태**로 Cloud Run 서버와 Job을 배포합니다.
+
+   ```bash
+   bash scripts/deploy-cloud-run.sh
+   bash scripts/enable-mcp-access.sh
+   ```
+
+   마지막 명령은 익명 `/mcp` 요청이 **HTTP 401**, OAuth 검색 메타데이터가 **HTTP 200**인지 검사합니다. 실패하면 서버를 다시 비공개로 전환합니다.
+
+## ChatGPT에서 사용
+
+ChatGPT → Plugins → 사용자 지정 MCP 서버 추가에서 `https://...run.app/mcp`를 연결하고 Google OAuth 로그인합니다. **별도의 ScribeFlow 플러그인 패키지는 만들 필요가 없습니다.** 사용자에게 제공되는 도구는 아래 두 개뿐입니다.
+
+- `transcribe_audio(file_id)`: 요청한 Drive 녹음 파일 하나 전사 시작 (OpenAI API 요금 발생)
+- `get_transcription_status(operation)`: 진행·완료·실패 상태 확인 (추가 전사 없음)
+
+이후 다른 PC나 Mac, 모바일에서도 같은 ChatGPT 계정으로 사용할 수 있으며 Python, rclone, FFmpeg 설치는 필요 없습니다. ScribeFlow 서버는 요청 없을 때 0개 인스턴스로 축소됩니다. 파일 ID 탐색은 연결된 `gdrive:`의 루트 전체를 대상으로 하지만, 공유 드라이브 파일 일부는 연결 범위에 따라 검색되지 않을 수 있습니다.
+
+## 제거
+
+ChatGPT의 ScribeFlow 연결을 해제하고, Google Auth Platform의 `ScribeFlow` **OAuth Web Client**를 삭제합니다. Cloud Shell에서는 먼저 제거 대상만 확인합니다.
 
 ```bash
-bash scripts/deploy-cloud-run.sh
+bash scripts/uninstall-cloud-run.sh
+# 실제 클라우드 리소스 삭제를 명시적으로 승인할 때만:
+bash scripts/uninstall-cloud-run.sh --apply
 ```
 
-스크립트는 이미지 빌드, Cloud Run 전사 Job, **IAM 비공개** MCP 서비스를 만들고,
-추가로 MCP용 48자 정도의 임의 비밀값을 Secret Manager에 저장합니다.
-아직 사용자나 ChatGPT가 외부에서 접근할 수 없습니다.
+이는 전용 Cloud Run Service·Job, Firestore OAuth DB, 이미지 저장소, 전용 서비스 계정, ScribeFlow OAuth 비밀만 정리합니다. **Google Cloud 프로젝트, 사용자 녹음·TXT, 기존 OpenAI API 키와 rclone 인증 비밀은 보존합니다.** 삭제는 되돌릴 수 없으므로 검토 후 실행하세요.
 
-다음 검사를 통과한 경우에만 외부 접근을 활성화합니다.
-
-```bash
-bash scripts/enable-mcp-access.sh
-```
-
-- 평범한 `/mcp` 주소는 HTTP **404**가 나와야 합니다.
-- 비밀 URL 주소는 MCP `initialize` 응답으로 HTTP **200**이 나와야 합니다.
-- 검사 실패 시 `allUsers` 호출 권한을 다시 제거합니다.
-- 성공 후 출력된 비밀 URL은 **ChatGPT 플러그인 설정란에만 복사**하세요.
-
-ChatGPT 웹 > Plugins > Add custom MCP server를 선택하고 비밀 URL의 전체
-`https://.../<비밀값>/mcp` 주소를 입력하세요. 인증 유형은
-`No authentication`입니다. 플러그인을 설치하고 `@`로 호출할 수 있습니다.
-사용 도구는 `transcribe_audio(file_id)`와
-`get_transcription_status(operation)`입니다.
-
-## Drive 범위 및 안전한 운영
-
-- 특별한 루트 폴더 제한 없이 연결된 `gdrive:`의 전체 루트에서
-  요청한 파일 ID를 찾습니다. 전체 Drive를 자동으로 전사하지는 않습니다.
-- 파일 ID 검색은 재귀적으로 파일을 조회하므로 큰 Drive에서는 느릴 수 있습니다.
-  별도 공유 드라이브나 '공유 문서함' 전체를 자동 포함하지는 않습니다.
-- API 호출 후 실패한 음성을 다시 실행하면 비용이 다시 발생할 수 있습니다.
-- Google Drive OAuth 토큰은 Cloud Run Job의 임시 쓰기 가능한 설정 파일로 복사합니다.
-  rclone의 토큰이 갱신된 경우 Secret Manager 원본이 자동 갱신되지는 않습니다.
-- 중단하려면 Cloud Run 서비스의 `allUsers` invoker 바인딩을 제거하세요.
-  더 이상 사용하지 않으면 서비스와 Job 및 관련 비밀과 이미지를 각각 정리합니다.
-  원본 녹음이나 결과 TXT를 지우지 않습니다.
+Google 로그인 OAuth는 FastMCP의 `GoogleProvider` 오픈소스 구현을 사용합니다. Cloud Run 인스턴스 재시작 후 인증 상태를 보존하기 위해 Google Firestore에 **암호화된** OAuth 상태를 저장합니다. Google Cloud 리소스/Firestore와 OpenAI API에는 비용이 발생할 수 있으며 Cloud Run 예산 설정만으로 다른 서비스의 사용료가 제한되지는 않습니다. 실제 로그인 및 전사 성공은 클라우드 배포 후 검증해야 합니다.

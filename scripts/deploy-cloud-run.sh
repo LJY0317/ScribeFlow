@@ -1,34 +1,43 @@
 #!/usr/bin/env bash
-# Run from Google Cloud Shell. Deploys no public endpoint and does not run a transcription.
+# One Google Cloud Run MCP service + one on-demand transcription Job.
+# Google OAuth is configured in the existing Google Cloud project.
 set -euo pipefail
 
-: "${GCP_PROJECT:?Set GCP_PROJECT to the existing project ID}"
+for name in GCP_PROJECT SCRIBEFLOW_GOOGLE_CLIENT_ID SCRIBEFLOW_GOOGLE_EMAIL; do
+  if [[ -z "${!name:-}" ]]; then
+    echo "Missing $name (see docs/cloud-run.md)" >&2
+    exit 1
+  fi
+done
 REGION="${SCRIBEFLOW_REGION:-asia-northeast3}"
 JOB=scribeflow-transcribe
 SERVICE=scribeflow-mcp
 REPO=scribeflow
 OPENAI_SECRET="${SCRIBEFLOW_OPENAI_SECRET:-scribeflow-openai-api-key}"
 RCLONE_SECRET="${SCRIBEFLOW_RCLONE_SECRET:-scribeflow-rclone-config}"
-MCP_SECRET=scribeflow-mcp-access-token
+GOOGLE_SECRET=scribeflow-google-client-secret
+SEED_SECRET=scribeflow-oauth-seed
 WORKER_SA="scribeflow-worker@${GCP_PROJECT}.iam.gserviceaccount.com"
 GATEWAY_SA="scribeflow-gateway@${GCP_PROJECT}.iam.gserviceaccount.com"
 
+# Cloud Run deterministic service URL is available before initial deployment.
+PROJECT_NUMBER="$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')"
+URL="https://${SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
+
 gcloud config set project "$GCP_PROJECT"
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
-  artifactregistry.googleapis.com secretmanager.googleapis.com --project "$GCP_PROJECT"
+  artifactregistry.googleapis.com secretmanager.googleapis.com \
+  firestore.googleapis.com --project "$GCP_PROJECT"
 
-for name in "$OPENAI_SECRET" "$RCLONE_SECRET"; do
-  gcloud secrets versions describe latest --secret="$name" --project "$GCP_PROJECT" >/dev/null
+for name in "$OPENAI_SECRET" "$RCLONE_SECRET" "$GOOGLE_SECRET"; do
+  gcloud secrets versions describe latest --secret="$name" --project="$GCP_PROJECT" >/dev/null
 done
 
-# Generate a secret URL suffix without showing it in command output or history.
-if ! gcloud secrets describe "$MCP_SECRET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
-  python3 -c 'import secrets; print(secrets.token_urlsafe(36), end="")' | \
-    gcloud secrets create "$MCP_SECRET" --project "$GCP_PROJECT" \
+if ! gcloud secrets describe "$SEED_SECRET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+  python3 -c 'import secrets; print(secrets.token_urlsafe(48), end="")' | \
+    gcloud secrets create "$SEED_SECRET" --project "$GCP_PROJECT" \
       --replication-policy=automatic --data-file=- >/dev/null
 fi
-gcloud secrets versions describe latest --secret="$MCP_SECRET" \
-  --project="$GCP_PROJECT" >/dev/null
 
 for name in scribeflow-worker scribeflow-gateway; do
   email="$name@${GCP_PROJECT}.iam.gserviceaccount.com"
@@ -38,19 +47,29 @@ done
 
 for name in "$OPENAI_SECRET" "$RCLONE_SECRET"; do
   gcloud secrets add-iam-policy-binding "$name" --project "$GCP_PROJECT" \
-    --member="serviceAccount:$WORKER_SA" --role=roles/secretmanager.secretAccessor >/dev/null
+    --member="serviceAccount:$WORKER_SA" \
+    --role=roles/secretmanager.secretAccessor >/dev/null
 done
-gcloud secrets add-iam-policy-binding "$MCP_SECRET" --project "$GCP_PROJECT" \
-  --member="serviceAccount:$GATEWAY_SA" \
-  --role=roles/secretmanager.secretAccessor >/dev/null
+for name in "$GOOGLE_SECRET" "$SEED_SECRET"; do
+  gcloud secrets add-iam-policy-binding "$name" --project "$GCP_PROJECT" \
+    --member="serviceAccount:$GATEWAY_SA" \
+    --role=roles/secretmanager.secretAccessor >/dev/null
+done
+
+# A separate, application-owned database makes uninstall safe and complete.
+if ! gcloud firestore databases describe --database=scribeflow-oauth \
+  --project="$GCP_PROJECT" >/dev/null 2>&1; then
+  gcloud firestore databases create --database=scribeflow-oauth \
+    --location="$REGION" --type=firestore-native --project="$GCP_PROJECT"
+fi
+gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
+  --member="serviceAccount:$GATEWAY_SA" --role=roles/datastore.user >/dev/null
 
 if ! gcloud artifacts repositories describe "$REPO" --location "$REGION" \
   --project "$GCP_PROJECT" >/dev/null 2>&1; then
   gcloud artifacts repositories create "$REPO" --repository-format=docker \
-    --location "$REGION" --project "$GCP_PROJECT" \
-    --description="ScribeFlow Cloud Run images"
+    --location "$REGION" --project "$GCP_PROJECT"
 fi
-
 IMAGE="${REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO}/scribeflow:$(git rev-parse --short HEAD)"
 gcloud builds submit . --tag "$IMAGE" --project "$GCP_PROJECT"
 
@@ -67,18 +86,22 @@ gcloud run jobs add-iam-policy-binding "$JOB" --project "$GCP_PROJECT" \
 gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --member="serviceAccount:$GATEWAY_SA" --role=roles/run.viewer >/dev/null
 
+# Never leave a previous, unprotected revision publicly invokable.
+gcloud run services remove-iam-policy-binding "$SERVICE" --project "$GCP_PROJECT" \
+  --region "$REGION" --member=allUsers --role=roles/run.invoker >/dev/null 2>&1 || true
+
 gcloud run deploy "$SERVICE" --image "$IMAGE" --project "$GCP_PROJECT" \
   --region "$REGION" --service-account "$GATEWAY_SA" \
   --cpu 1 --memory 512Mi --min-instances 0 --max-instances 1 \
   --no-allow-unauthenticated \
-  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=gateway,GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},SCRIBEFLOW_REGION=${REGION},SCRIBEFLOW_JOB=${JOB}" \
-  --set-secrets="SCRIBEFLOW_MCP_ACCESS_TOKEN=${MCP_SECRET}:latest"
+  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=gateway,GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},SCRIBEFLOW_REGION=${REGION},SCRIBEFLOW_JOB=${JOB},SCRIBEFLOW_MCP_URL=${URL},SCRIBEFLOW_GOOGLE_CLIENT_ID=${SCRIBEFLOW_GOOGLE_CLIENT_ID},SCRIBEFLOW_GOOGLE_EMAIL=${SCRIBEFLOW_GOOGLE_EMAIL}" \
+  --set-secrets="SCRIBEFLOW_GOOGLE_CLIENT_SECRET=${GOOGLE_SECRET}:latest,SCRIBEFLOW_OAUTH_SEED=${SEED_SECRET}:latest"
 
-# If redeploying an older service, explicitly remove any prior public permission.
-gcloud run services remove-iam-policy-binding "$SERVICE" --project "$GCP_PROJECT" \
-  --region "$REGION" --member=allUsers --role=roles/run.invoker >/dev/null 2>&1 || true
-
-URL="$(gcloud run services describe "$SERVICE" --project "$GCP_PROJECT" \
+ACTUAL_URL="$(gcloud run services describe "$SERVICE" --project "$GCP_PROJECT" \
   --region "$REGION" --format='value(status.url)')"
-printf 'Private ScribeFlow MCP deployed at %s\n' "$URL"
-printf 'No transcription was executed. Next: bash scripts/enable-mcp-access.sh\n'
+if [[ "$ACTUAL_URL" != "$URL" ]]; then
+  echo "Service is private. Expected $URL, actual $ACTUAL_URL; update Google OAuth redirect configuration before publishing." >&2
+  exit 1
+fi
+printf 'OAuth gateway deployed privately at %s/mcp\n' "$URL"
+printf 'No audio was transcribed. Run scripts/enable-mcp-access.sh after OAuth setup.\n'
