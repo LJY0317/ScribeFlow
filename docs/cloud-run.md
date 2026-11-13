@@ -1,74 +1,153 @@
-# Google Cloud ScribeFlow — ChatGPT 연결 1개
+# ScribeFlow 원격 설치 · 사용 · 완전 제거
 
-Google Cloud Run의 MCP 서버가 전사 요청을 받으면 Cloud Run Job이 **선택한 Drive 음성 파일 한 개**를 처리합니다. 기존 OpenAI API와 rclone Drive 인증을 재사용해 결과 TXT를 원본 폴더에 저장합니다. 추가 인증 업체나 다른 컴퓨터에 설치할 프로그램은 없습니다.
+Google Cloud Run에 개인용 MCP 서버와 요청당 실행되는 음성 전사 Job을 배포합니다. ChatGPT에서 **Google OAuth**로 로그인하고 Google Drive 음성 파일 ID를 전달하면, OpenAI API가 음성을 전사하여 **원본과 같은 Drive 폴더에 TXT**를 만듭니다. 서버는 유휴 시 인스턴스가 0개로 줄어듭니다. **설정 후에는 맥북을 켜둘 필요도, 다른 PC에 ScribeFlow를 설치할 필요도 없습니다.**
 
-## 첫 설치
+필요한 것: Google 계정, 결제가 연결된 Google Cloud 프로젝트, [OpenAI API 키](https://platform.openai.com/api-keys), Google Drive, 사용자 지정 MCP를 지원하는 ChatGPT 계정. Google Cloud와 OpenAI API는 별도 과금합니다. **Google Cloud 예산 알림은 지출을 자동 차단하는 하드캡이 아닙니다.**
 
-기존 Google Cloud 프로젝트에서 `gcloud` 인증된 **Cloud Shell**을 사용합니다.
+> **계정은 구분됩니다.** Cloud 프로젝트를 관리하는 Google 계정, ChatGPT에 로그인한 계정, ScribeFlow 사용을 인증할 Google 계정은 서로 달라도 됩니다. 다만 ChatGPT 계정을 타인과 공유한다면, 연결된 ScribeFlow 전사 권한도 공유될 수 있습니다. OAuth는 **최초 연결**을 보호하지만 ChatGPT 사용자를 매번 재인증하지 않습니다.
+
+## 1. Google Cloud 프로젝트와 코드 준비
+
+1. [Google Cloud 프로젝트 만들기](https://console.cloud.google.com/projectcreate)에서 전용 프로젝트를 생성하고 [결제](https://console.cloud.google.com/billing)를 연결합니다. 전용 프로젝트면 나중에 프로젝트 자체를 삭제하기 쉽습니다.
+2. [Cloud Shell](https://shell.cloud.google.com/)을 열어 아래 명령을 실행합니다. `YOUR_PROJECT_ID`는 콘솔의 프로젝트 **ID**입니다.
+
+```bash
+export GCP_PROJECT='YOUR_PROJECT_ID'
+gcloud config set project "$GCP_PROJECT"
+gcloud services enable secretmanager.googleapis.com --project="$GCP_PROJECT"
+git clone https://github.com/LJY0317/ScribeFlow.git ~/ScribeFlow
+cd ~/ScribeFlow
+```
+
+이미 저장소가 있다면 `git clone` 대신 `cd ~/ScribeFlow && git pull --ff-only`를 사용합니다. Cloud Shell은 오래 사용하지 않으면 종료되지만, **배포된 Cloud Run 서비스와 별개**입니다. 관리자에게 Google Cloud 프로젝트 리소스·IAM 변경 권한이 필요합니다.
+
+## 2. Google Drive rclone 인증을 Secret Manager에 등록
+
+관리용 컴퓨터에서 [rclone](https://rclone.org/drive/)을 설치한 뒤 `rclone config`로 Google Drive 연결을 만들고 원격 이름을 **`gdrive`**로 지정합니다. 이 단계는 관리자가 처음 한 번만 수행합니다. 다른 ChatGPT 기기에는 rclone이 필요 없습니다. 기존 `gdrive:` 연결이 있으면 그대로 사용할 수 있습니다.
+
+`rclone config file`로 `rclone.conf`의 위치를 확인합니다. 인증 갱신 토큰이 포함되므로 **GitHub·채팅·로그에 업로드하지 마세요.** 여러 계정의 인증을 함께 담았다면 ScribeFlow용 `gdrive` 설정만 담은 별도 구성 파일을 사용하는 것이 좋습니다.
+
+Cloud Shell의 **파일 업로드** 메뉴로 `rclone.conf`를 Cloud Shell 홈 디렉터리에 올린 뒤 아래처럼 Secret Manager에 저장합니다. 완료 후 **Cloud Shell의 일회용 복사본만** 지웁니다. 로컬의 공용 rclone 설정은 유지합니다.
+
+```bash
+gcloud secrets create scribeflow-rclone-config \
+  --replication-policy=automatic --data-file="$HOME/rclone.conf" \
+  --project="$GCP_PROJECT"
+rm -f "$HOME/rclone.conf"
+export SCRIBEFLOW_RCLONE_SECRET='scribeflow-rclone-config'
+```
+
+이미 Drive 인증이 다른 이름으로 Secret Manager에 저장되어 있다면 새로 만들 필요 없이 `SCRIBEFLOW_RCLONE_SECRET`에 **그 기존 이름**을 지정합니다.
+
+## 3. OpenAI API 키 등록
+
+[OpenAI API 키](https://platform.openai.com/api-keys)를 생성하고 API 결제·사용량을 설정합니다. **ChatGPT 구독료와 API 사용료는 별개**입니다. 비밀값은 아래 프롬프트에만 입력하고 터미널 출력·코드·GitHub에 남기지 마세요.
+
+```bash
+read -r -s -p 'OpenAI API key: ' OPENAI_KEY; echo
+printf '%s' "$OPENAI_KEY" | gcloud secrets create scribeflow-openai-api-key \
+  --replication-policy=automatic --data-file=- --project="$GCP_PROJECT"
+unset OPENAI_KEY
+export SCRIBEFLOW_OPENAI_SECRET='scribeflow-openai-api-key'
+```
+
+이미 Google Secret Manager에 OpenAI 키가 있다면 다시 만들지 말고 `SCRIBEFLOW_OPENAI_SECRET`에 그 비밀 이름을 설정합니다. Secret Manager의 복사본을 삭제해도 **OpenAI에서 발급한 원본 API 키는 유효하게 남습니다.**
+
+## 4. Google OAuth 로그인 설정
+
+아직 서버를 배포하지 않았어도 다음 명령으로 **고정형 Cloud Run 주소**를 계산할 수 있습니다.
+
+```bash
+PROJECT_NUMBER="$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')"
+URL="https://scribeflow-mcp-${PROJECT_NUMBER}.asia-northeast3.run.app"
+echo "MCP endpoint: $URL/mcp"
+echo "OAuth redirect: $URL/auth/callback"
+```
+
+1. [Google Auth Platform](https://console.cloud.google.com/auth/overview)의 브랜딩·대상(Audience)을 설정합니다. 개인 Google 계정은 External/외부를 선택하고, 앱이 테스트 상태라면 **ScribeFlow 로그인용 Google 계정을 테스트 사용자로 추가**합니다.
+2. 클라이언트 → 클라이언트 만들기 → **웹 애플리케이션**을 선택합니다. 이름은 예: `ScribeFlow`. 승인된 JavaScript 원본은 필수가 아닙니다. Google 제공 MCP 도구용 AI 에이전트 옵션도 필요하지 않습니다.
+3. **승인된 리디렉션 URI**에는 출력된 `$URL/auth/callback` 주소를 정확히 등록하고 저장합니다. 이것은 ChatGPT의 MCP 주소가 **아닙니다**.
+4. 발급된 Client ID와 **실제 OAuth 로그인을 허용할 Google 계정 이메일**을 다음 환경변수로 설정하고, Client Secret은 Secret Manager에 저장합니다.
+
+```bash
+export SCRIBEFLOW_GOOGLE_CLIENT_ID='YOUR_CLIENT_ID.apps.googleusercontent.com'
+export SCRIBEFLOW_GOOGLE_EMAIL='YOUR_GOOGLE_LOGIN_EMAIL'
+
+read -r -s -p 'Google OAuth Client Secret: ' GOOGLE_CLIENT_SECRET; echo
+printf '%s' "$GOOGLE_CLIENT_SECRET" | gcloud secrets create scribeflow-google-client-secret \
+  --replication-policy=automatic --data-file=- --project="$GCP_PROJECT"
+unset GOOGLE_CLIENT_SECRET
+```
+
+Google 로그인에는 `openid`·`userinfo.email`만 요청합니다. **Google Drive 파일 접근 권한은 별도 rclone 설정으로 처리**합니다. 로그인 이메일을 바꾸려면 Cloud Run의 `SCRIBEFLOW_GOOGLE_EMAIL` 설정과 Google OAuth 테스트 사용자 설정을 함께 변경하고 재인증해야 합니다.
+
+## 5. Cloud Run 배포 · ChatGPT 연결
+
+**같은 Cloud Shell 세션**에서 `GCP_PROJECT`, `SCRIBEFLOW_OPENAI_SECRET`, `SCRIBEFLOW_RCLONE_SECRET`, `SCRIBEFLOW_GOOGLE_CLIENT_ID`, `SCRIBEFLOW_GOOGLE_EMAIL`이 모두 설정된 상태로 실행합니다.
 
 ```bash
 cd ~/ScribeFlow
-export GCP_PROJECT='YOUR_PROJECT_ID'
-export SCRIBEFLOW_OPENAI_SECRET='YOUR_EXISTING_OPENAI_SECRET_NAME'
-export SCRIBEFLOW_RCLONE_SECRET='YOUR_EXISTING_RCLONE_SECRET_NAME'
+bash scripts/deploy-cloud-run.sh
+bash scripts/enable-mcp-access.sh
 ```
 
-1. **Google OAuth용 주소 확인:** Cloud Shell에서 아래 명령으로 서버 주소를 확인합니다. 아직 배포하지 않아도 주소를 알 수 있습니다.
+첫 번째 스크립트는 필요한 Google Cloud API, 앱 전용 서비스 계정, `scribeflow-oauth` Firestore 데이터베이스, 이미지 저장소를 만들고 **비공개 상태**로 Cloud Run MCP 서버와 전사 Job을 배포합니다. 두 번째 스크립트는 익명 MCP 도구 요청에 **401**, OAuth 메타데이터에 **200**이 반환되는지 확인한 다음 외부 연결을 활성화합니다. `*.a.run.app`과 위 고정 주소가 달라도 Cloud Run의 주소 별칭이므로 **ChatGPT와 Google OAuth에는 반드시 위 고정 주소를 사용**합니다.
+
+ChatGPT의 **Plugins → 사용자 지정 MCP 서버 추가**(UI 명칭은 변경 가능)에서 다음과 같이 설정합니다.
+
+| 항목 | 입력 |
+| --- | --- |
+| 이름 | `ScribeFlow` |
+| 서버 URL | **`https://scribeflow-mcp-프로젝트번호.asia-northeast3.run.app/mcp`** |
+| 인증 | **OAuth** |
+
+ChatGPT의 접근 허용(Allow Access)을 승인하고 **4단계의 Google 계정으로 로그인**합니다. 다른 PC·Mac에서도 **같은 ChatGPT 계정 및 워크스페이스**라면 로컬 설치는 필요 없습니다. 다만 ChatGPT 앱·플러그인 제공 상태 및 OAuth 토큰 만료에 따라 앱 선택 또는 재인증이 필요할 수 있습니다.
+
+## 6. 사용 · 시험 · 운영
+
+- `transcribe_audio(file_id)`: Google Drive의 음성 파일 ID **한 개**를 받아 전사 작업을 시작하며 OpenAI API 사용료가 발생합니다.
+- `get_transcription_status(operation)`: 실행 상태(`running` / `completed` / `failed`)를 조회합니다. 상태 조회는 새 전사를 시작하지 않습니다.
+
+ID는 `https://drive.google.com/file/d/FILE_ID/view`에서 확인합니다. **ScribeFlow MCP 자체는 Google Drive 파일명 검색 도구가 없으므로** ChatGPT가 “SSAFY 폴더의 녹음”만으로 찾으려면 별도 Google Drive 연결이나 파일 링크가 필요합니다. 이미 동명 TXT가 있으면 SHA-256 일치 시 `skipped_existing`, 미확인·불일치 시에도 덮어쓰지 않습니다.
+
+**실전 검증 방법:** 원본 음성만 있고 동명 TXT가 없는 파일로 전사 요청 → `completed` 확인 → 원본 Drive 폴더의 **새 TXT 파일 ID·생성시각·본문** 확인. 기존 TXT를 시험 삼아 제거한다면 **휴지통으로 이동**해 복구 가능한 상태로 두세요. 실제 API 호출은 비용이 발생합니다.
+
+**검증 사실(2026-11-13):** 공유받은 Drive 폴더의 M4A 약 0.84MB와 일반 Drive의 SSAFY M4A 약 68MB에서 기존 TXT를 휴지통으로 옮긴 뒤 새 TXT가 생성됐습니다. Linux CI의 Python 테스트 및 Docker 빌드도 통과했습니다. Windows 로컬 CLI 및 각 모바일 ChatGPT 앱은 별도 실기 검증 전입니다.
+
+**업데이트:** `git pull --ff-only`로 갱신한 뒤 **5단계의 두 배포 스크립트**를 재실행합니다. 기존 Google OAuth 클라이언트·OpenAI 키·Drive 인증을 재사용합니다. 새 Cloud Shell 세션에서는 `export` 환경변수를 다시 설정해야 하지만 Secret Manager의 비밀값은 유지됩니다.
+
+| 현상 | 확인할 설정 |
+| --- | --- |
+| `redirect_uri_mismatch` | Google Cloud OAuth 웹 클라이언트의 **승인된 리디렉션 URI**가 `.../auth/callback`인지 |
+| `invalid_target` / Resource mismatch | ChatGPT의 **서버 URL**이 `.../mcp`인지 (`.../auth/callback` 아님) |
+| 연결 시 `403` | Cloud Run 서비스의 비공개 상태. `scripts/enable-mcp-access.sh` 실행 |
+| Google 계정 권한 오류 | OAuth 테스트 사용자, 로그인 이메일, Cloud Run `SCRIBEFLOW_GOOGLE_EMAIL` 일치 여부 |
+| 전사 작업 실패 | [Cloud Run Job 실행 로그](https://console.cloud.google.com/run/jobs)의 `scribeflow-transcribe` 확인 (토큰·비밀은 공유하지 않음) |
+| 공유받은 폴더의 파일 검색 실패 | 최신 이미지와 `gdrive` 인증 계정의 해당 파일 접근 권한 확인 |
+
+## 완전 제거
+
+**ScribeFlow 소유 리소스와 공용 사용자 자산을 구분합니다.** 기본 제거 스크립트는 **Google Cloud 프로젝트, 기존 OpenAI/rclone 키, 음성 원본·TXT, GitHub 저장소를 보존**합니다. 전용 Google Cloud 프로젝트라면 마지막에 프로젝트 자체를 삭제하는 방식이 가장 깔끔합니다.
+
+1. **ChatGPT**: Plugins에서 ScribeFlow 연결을 삭제합니다. Google 계정의 [제3자 앱 연결](https://myaccount.google.com/connections)에서도 ScribeFlow 접근 권한을 취소할 수 있습니다.
+2. **Cloud Shell**: 저장소를 다시 클론하거나 기존 `~/ScribeFlow`에서 아래 스크립트를 실행합니다. 먼저 **dry-run으로 제거 대상 목록**을 확인합니다.
 
    ```bash
-   echo "https://scribeflow-mcp-$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)').asia-northeast3.run.app"
+   export GCP_PROJECT='YOUR_PROJECT_ID'
+   export SCRIBEFLOW_OPENAI_SECRET='YOUR_OPENAI_SECRET_NAME'
+   export SCRIBEFLOW_RCLONE_SECRET='YOUR_RCLONE_SECRET_NAME'
+   cd ~/ScribeFlow
+   bash scripts/uninstall-cloud-run.sh
+   # 검토 후 앱 전용 리소스 실제 삭제:
+   bash scripts/uninstall-cloud-run.sh --apply
    ```
 
-2. [Google Auth Platform](https://console.cloud.google.com/auth/overview)에서 **브랜딩/대상(Audience)** 을 설정합니다. 개인 Google 계정은 `External` + 테스트 사용자로 본인의 Google 계정을 추가할 수 있습니다. **Clients → Create Client → Web application**을 선택해 `ScribeFlow` 클라이언트를 생성합니다.
+   제거 범위: `scribeflow-mcp` Cloud Run 서비스, `scribeflow-transcribe` Job, `scribeflow-oauth` Firestore 데이터베이스·OAuth 로그인 상태, `scribeflow` Artifact Registry 저장소와 이미지, `scribeflow-worker`·`scribeflow-gateway` 서비스 계정 및 관련 IAM, `scribeflow-google-client-secret`·`scribeflow-oauth-seed`·구형 앱 전용 인증 비밀. Firestore·이미지 삭제는 되돌릴 수 없습니다.
 
-   - Authorized JavaScript origins: 위에서 확인한 `https://...run.app` 주소
-   - Authorized redirect URI: 같은 주소 뒤에 `/auth/callback` 추가
-   - OAuth 요청 권한: `openid`, `userinfo.email`만 사용합니다. ScribeFlow는 여기서 Google Drive 접근을 요청하지 않습니다.
+3. **Google Auth Platform**의 [클라이언트](https://console.cloud.google.com/auth/clients)에서 ScribeFlow용 OAuth **웹 클라이언트**를 삭제합니다. 브랜드·테스트 사용자 설정은 프로젝트에 남을 수 있으나, 공용 프로젝트라면 다른 앱을 위해 보존하세요.
+4. **Secret Manager**: `SCRIBEFLOW_OPENAI_SECRET` 및 `SCRIBEFLOW_RCLONE_SECRET`가 *ScribeFlow 전용으로 새로 만든 비밀인 경우에만* 수동으로 삭제합니다. 다른 서비스가 사용하는 기존 비밀이면 유지합니다. **OpenAI API 키도** 다른 용도가 없다면 [OpenAI 대시보드](https://platform.openai.com/api-keys)에서 별도로 폐기합니다. rclone 인증 설정도 다른 프로그램에서 사용한다면 유지합니다.
+5. **과금·잔여 리소스**: [예산 알림](https://console.cloud.google.com/billing/budgets), Cloud Build 스테이징 스토리지, Cloud Logging 및 기타 Google Cloud 자원을 검토합니다. 공용 결제 계정·공용 Cloud Shell 설정은 자동 삭제하지 않습니다.
+6. **Google Cloud 프로젝트 자체 폐기(선택):** 이 프로젝트에 ScribeFlow 외의 데이터나 서비스가 없다는 것을 확인한 뒤 [리소스 관리자](https://console.cloud.google.com/cloud-resource-manager)에서 **해당 프로젝트를 종료**하면 남은 프로젝트 소유 자원도 정리할 수 있습니다. 프로젝트 삭제는 광범위하게 파괴적이므로 앱 제거 스크립트가 자동 수행하지 않습니다. Google Cloud 결제 계정과 OpenAI 계정은 별도입니다.
+7. **로컬 설치물**: 실행 중인 전사가 없을 때 `scribeflow auth remove`(macOS 전용), `uv tool uninstall scribeflow`, 소스 체크아웃·전용 캐시를 제거합니다. 공용 `rclone.conf`, uv 캐시, FFmpeg·Python과 **사용자 원본 오디오 및 완성된 TXT**는 자동 삭제하지 않습니다.
 
-3. 발급된 **Client ID**를 다음 환경변수에 입력합니다. 사용하는 **본인 Google 계정 이메일**도 입력합니다. 이 계정 외에는 유료 전사 도구를 호출할 수 없습니다.
-
-   ```bash
-   export SCRIBEFLOW_GOOGLE_CLIENT_ID='CLIENT_ID.apps.googleusercontent.com'
-   export SCRIBEFLOW_GOOGLE_EMAIL='YOUR_GOOGLE_LOGIN_EMAIL'
-   ```
-
-4. 발급된 **Client Secret**은 채팅이나 코드가 아니라 Google Cloud Secret Manager에 저장합니다. 아래 명령어의 `read` 프롬프트에만 비밀값을 붙여넣으세요. 입력한 값은 화면에 표시되지 않습니다. 기존에 만든 OpenAI/rclone 비밀은 건드리지 않습니다.
-
-   ```bash
-   read -r -s -p 'Google OAuth Client Secret: ' GOOGLE_CLIENT_SECRET; echo
-   printf '%s' "$GOOGLE_CLIENT_SECRET" | gcloud secrets create scribeflow-google-client-secret \
-     --replication-policy=automatic --data-file=- --project="$GCP_PROJECT"
-   unset GOOGLE_CLIENT_SECRET
-   ```
-
-5. 한 번만 배포합니다. 스크립트가 별도의 OAuth 키를 Secret Manager에 생성하고, ScribeFlow 전용 Firestore 데이터베이스 `scribeflow-oauth`를 만들며, **외부 접근이 막힌 상태**로 Cloud Run 서버와 Job을 배포합니다.
-
-   ```bash
-   bash scripts/deploy-cloud-run.sh
-   bash scripts/enable-mcp-access.sh
-   ```
-
-   마지막 명령은 익명 `/mcp` 요청이 **HTTP 401**, OAuth 검색 메타데이터가 **HTTP 200**인지 검사합니다. 실패하면 서버를 다시 비공개로 전환합니다.
-
-## ChatGPT에서 사용
-
-ChatGPT → Plugins → 사용자 지정 MCP 서버 추가에서 `https://...run.app/mcp`를 연결하고 Google OAuth 로그인합니다. **별도의 ScribeFlow 플러그인 패키지는 만들 필요가 없습니다.** 사용자에게 제공되는 도구는 아래 두 개뿐입니다.
-
-- `transcribe_audio(file_id)`: 요청한 Drive 녹음 파일 하나 전사 시작 (OpenAI API 요금 발생)
-- `get_transcription_status(operation)`: 진행·완료·실패 상태 확인 (추가 전사 없음)
-
-이후 다른 PC나 Mac, 모바일에서도 같은 ChatGPT 계정으로 사용할 수 있으며 Python, rclone, FFmpeg 설치는 필요 없습니다. ScribeFlow 서버는 요청 없을 때 0개 인스턴스로 축소됩니다. 파일 ID 탐색은 연결된 `gdrive:`의 루트 전체를 대상으로 하지만, 공유 드라이브 파일 일부는 연결 범위에 따라 검색되지 않을 수 있습니다.
-
-## 제거
-
-ChatGPT의 ScribeFlow 연결을 해제하고, Google Auth Platform의 `ScribeFlow` **OAuth Web Client**를 삭제합니다. Cloud Shell에서는 먼저 제거 대상만 확인합니다.
-
-```bash
-bash scripts/uninstall-cloud-run.sh
-# 실제 클라우드 리소스 삭제를 명시적으로 승인할 때만:
-bash scripts/uninstall-cloud-run.sh --apply
-```
-
-이는 전용 Cloud Run Service·Job, Firestore OAuth DB, 이미지 저장소, 전용 서비스 계정, ScribeFlow OAuth 비밀만 정리합니다. **Google Cloud 프로젝트, 사용자 녹음·TXT, 기존 OpenAI API 키와 rclone 인증 비밀은 보존합니다.** 삭제는 되돌릴 수 없으므로 검토 후 실행하세요.
-
-Google 로그인 OAuth는 FastMCP의 `GoogleProvider` 오픈소스 구현을 사용합니다. Cloud Run 인스턴스 재시작 후 인증 상태를 보존하기 위해 Google Firestore에 **암호화된** OAuth 상태를 저장합니다. Google Cloud 리소스/Firestore와 OpenAI API에는 비용이 발생할 수 있으며 Cloud Run 예산 설정만으로 다른 서비스의 사용료가 제한되지는 않습니다. 실제 로그인 및 전사 성공은 클라우드 배포 후 검증해야 합니다.
+포트폴리오로 보존하려면 **GitHub의 공개 소스 저장소는 그대로 두세요.** GitHub 저장소는 Cloud Run 인스턴스·로컬 설치와 별개입니다.
