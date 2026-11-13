@@ -48,7 +48,7 @@ class CloudGatewayTests(unittest.TestCase):
         tools = {
             tool.name: tool for tool in asyncio.run(self.server().list_tools())
         }
-        schema = tools["transcribe_audio"].inputSchema
+        schema = tools["transcribe_audio"].parameters
         self.assertIn("file_id", schema["properties"])
         self.assertIn("keywords", schema["properties"])
         self.assertIn("prompt", schema["properties"])
