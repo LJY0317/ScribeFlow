@@ -21,9 +21,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .cache import clean_cache, job_lock
 from .engine import (
-    BITRATE_KBPS,
     MODEL,
-    auto_chunk_seconds,
     hash_file,
     transcribe_file,
 )
@@ -412,7 +410,7 @@ def _transcribe_locked(
         else:
             local_source = Path(paths.source).resolve(strict=True)
 
-        effective_seconds = chunk_seconds if chunk_seconds is not None else auto_chunk_seconds()
+
         settings = {
             "model": MODEL,
             "source_filename": local_source.name,
@@ -420,9 +418,9 @@ def _transcribe_locked(
             "language": language,
             "keywords": list(keywords),
             "prompt": prompt,
-            "chunk_seconds": effective_seconds,
+            "chunk_seconds": chunk_seconds,
             "overlap_seconds": overlap_seconds,
-            "bitrate_kbps": BITRATE_KBPS,
+            "audio_strategy": "original-or-stream-copy-v1",
         }
         signature = hashlib.sha256(
             json.dumps(settings, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -433,7 +431,7 @@ def _transcribe_locked(
             ensure_free_destination(paths)
             try:
                 transcribe_file(
-                    local_source, job_dir, chunk_seconds=effective_seconds,
+                    local_source, job_dir, chunk_seconds=chunk_seconds,
                     overlap_seconds=overlap_seconds, language=language,
                     keywords=keywords, prompt=prompt,
                 )
