@@ -78,12 +78,19 @@ def create_server():
     server = FastMCP("ScribeFlow", auth=auth)
 
     @server.tool(
-        description="Transcribe one Google Drive audio by file ID; incurs OpenAI API charges.",
+        description=(
+            "Transcribe one Google Drive audio by file ID; incurs OpenAI API charges. "
+            "Optional keywords are literal names or terms that may be spoken; "
+            "prompt is brief factual context, never invented dialogue. "
+            "Existing transcripts are not overwritten."
+        ),
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False),
     )
-    def transcribe_audio(file_id: str) -> dict:
+    def transcribe_audio(
+        file_id: str, keywords: list[str] | None = None, prompt: str = "",
+    ) -> dict:
         _require_owner(owner_email)
-        return backend.start(file_id)
+        return backend.start(file_id, keywords=keywords, prompt=prompt)
 
     @server.tool(
         description="Check a submitted transcription without restarting it.",
