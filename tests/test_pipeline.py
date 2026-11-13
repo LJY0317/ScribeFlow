@@ -83,12 +83,27 @@ class FilePathTests(unittest.TestCase):
         response = type("R", (), {"stdout": json.dumps([
             {"ID": file_id, "Path": "example/recording.m4a", "MimeType": "audio/x-m4a"}
         ])})()
-        with patch("scribeflow.pipeline.run_rclone", return_value=response):
-            self.assertEqual(resolve_source(file_id), "gdrive:example/recording.m4a")
-            self.assertEqual(
-                paths_for(f"https://drive.google.com/file/d/{file_id}/view").transcript,
-                "gdrive:example/recording.txt",
-            )
+        with patch.dict(os.environ, {"SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID": "example_folder"}):
+            with patch("scribeflow.pipeline.run_rclone", return_value=response):
+                self.assertEqual(resolve_source(file_id), "gdrive:example/recording.m4a")
+                self.assertEqual(
+                    paths_for(f"https://drive.google.com/file/d/{file_id}/view").transcript,
+                    "gdrive:example/recording.txt",
+                )
+
+    def test_shared_with_me_audio_stays_in_shared_scope(self):
+        file_id = "shared_drive_audio_file_00001"
+        response = type("R", (), {"stdout": json.dumps([
+            {"ID": file_id, "Path": "Shared folder/recording.m4a", "MimeType": "audio/x-m4a"}
+        ])})()
+        with patch.dict(os.environ, {
+            "SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID": "",
+            "RCLONE_DRIVE_SHARED_WITH_ME": "",
+        }):
+            os.environ.pop("RCLONE_DRIVE_SHARED_WITH_ME")
+            with patch("scribeflow.pipeline.run_rclone", return_value=response):
+                self.assertEqual(resolve_source(file_id), "gdrive:Shared folder/recording.m4a")
+            self.assertEqual(os.environ["RCLONE_DRIVE_SHARED_WITH_ME"], "true")
 
     def test_uploaded_url_is_discovered_from_actual_id(self):
         response = type("R", (), {"stdout": json.dumps([
