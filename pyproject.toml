@@ -21,6 +21,7 @@ scribeflow = "scribeflow.cli:main"
 cloud = [
     "google-auth[requests]>=2.40,<3",
     "mcp>=1.24,<2",
+    "pyjwt[crypto]>=2.10,<3",
 ]
 
 [tool.hatch.build.targets.wheel]
