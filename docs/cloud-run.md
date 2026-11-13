@@ -35,6 +35,9 @@ export SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID='folder_id_for_audio_scope'
 export SCRIBEFLOW_ALLOWED_FOLDER_IDS='another_folder_id:one_more_folder_id'
 export SCRIBEFLOW_OAUTH_ISSUER='https://your-tenant.us.auth0.com/'
 export SCRIBEFLOW_ALLOWED_SUBJECT='your-auth0-user-subject'
+# 선택: 이미 만든 Secret Manager 항목 이름이 기본값과 다른 경우
+export SCRIBEFLOW_OPENAI_SECRET='existing-openai-secret-name'
+export SCRIBEFLOW_RCLONE_SECRET='existing-rclone-secret-name'
 ```
 
 Cloud Shell과 ChatGPT 대화에 API 키 또는 Drive 토큰을 붙여 넣지 마세요.
@@ -48,6 +51,9 @@ Console → Security → Secret Manager에서 다음 두 secret을 만듭니다.
 - `scribeflow-rclone-config`: `[gdrive]` 연결만 포함한 rclone 설정 파일의
   텍스트. 개인 맥의 전체 rclone 설정을 통째로 복사하지 마세요. 이 설정에는
   OAuth refresh token이 포함되므로 **비공개 유지**가 필수입니다.
+
+기존 Secret Manager 항목을 재사용하는 경우 이름을 변경하거나 복제하지 말고
+`SCRIBEFLOW_OPENAI_SECRET`와 `SCRIBEFLOW_RCLONE_SECRET`에 해당 이름을 설정하세요.
 
 Drive 인증이 만료·폐기되면 이 secret을 업데이트해야 합니다. Job은
 실행 중 쓰기 가능한 사본만 사용하며 변경 내용을 Secret Manager에

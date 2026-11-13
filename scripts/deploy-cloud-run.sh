@@ -18,6 +18,8 @@ fi
 REGION="${SCRIBEFLOW_REGION:-asia-northeast3}"
 JOB="scribeflow-transcribe"
 SERVICE="scribeflow-mcp"
+OPENAI_SECRET="${SCRIBEFLOW_OPENAI_SECRET:-scribeflow-openai-api-key}"
+RCLONE_SECRET="${SCRIBEFLOW_RCLONE_SECRET:-scribeflow-rclone-config}"
 WORKER_SA="scribeflow-worker@${GCP_PROJECT}.iam.gserviceaccount.com"
 GATEWAY_SA="scribeflow-gateway@${GCP_PROJECT}.iam.gserviceaccount.com"
 
@@ -25,7 +27,7 @@ gcloud config set project "$GCP_PROJECT"
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
   artifactregistry.googleapis.com secretmanager.googleapis.com --project "$GCP_PROJECT"
 
-for name in scribeflow-openai-api-key scribeflow-rclone-config; do
+for name in "$OPENAI_SECRET" "$RCLONE_SECRET"; do
   gcloud secrets describe "$name" --project "$GCP_PROJECT" >/dev/null
 done
 
@@ -35,7 +37,7 @@ for name in scribeflow-worker scribeflow-gateway; do
     gcloud iam service-accounts create "$name" --project "$GCP_PROJECT"
 done
 
-for name in scribeflow-openai-api-key scribeflow-rclone-config; do
+for name in "$OPENAI_SECRET" "$RCLONE_SECRET"; do
   gcloud secrets add-iam-policy-binding "$name" --project "$GCP_PROJECT" \
     --member "serviceAccount:$WORKER_SA" --role roles/secretmanager.secretAccessor >/dev/null
 done
@@ -44,7 +46,7 @@ gcloud run jobs deploy "$JOB" --source . --project "$GCP_PROJECT" --region "$REG
   --service-account "$WORKER_SA" --tasks 1 --parallelism 1 \
   --max-retries 0 --task-timeout 3600s --cpu 1 --memory 2Gi \
   --set-env-vars="SCRIBEFLOW_CLOUD_MODE=worker,SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID=${SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID},SCRIBEFLOW_RCLONE_CONFIG_SECRET=/secrets/rclone.conf" \
-  --set-secrets="/secrets/rclone.conf=scribeflow-rclone-config:latest,OPENAI_API_KEY=scribeflow-openai-api-key:latest"
+  --set-secrets="/secrets/rclone.conf=${RCLONE_SECRET}:latest,OPENAI_API_KEY=${OPENAI_SECRET}:latest"
 
 gcloud run jobs add-iam-policy-binding "$JOB" --project "$GCP_PROJECT" --region "$REGION" \
   --member="serviceAccount:$GATEWAY_SA" \
