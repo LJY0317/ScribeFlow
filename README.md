@@ -71,7 +71,7 @@ scribeflow transcribe '파일_ID' --json
 
 ### ChatGPT 원격 MCP 사용
 
-[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 지정해 전사할 수 있습니다. 서버가 제공하는 도구는 `transcribe_audio(file_id, keywords=None, prompt="")`, `get_transcription_status(operation)` 두 개입니다. `keywords`에는 실제 녹음에 등장할 가능성이 있는 이름·전문용어를, `prompt`에는 짧은 사실관계(예: `기술 강의 녹음`)를 **선택적으로** 전달할 수 있습니다. 이 정보는 인식 힌트이지 전사해야 할 발언이 아니므로 실제 녹음에 없는 대사를 제공하지 마세요. 기존 TXT가 있으면 힌트를 추가해도 자동 재전사하거나 덮어쓰지 않습니다. **ScribeFlow 자체에는 Drive 파일명 검색 도구가 없습니다.** ChatGPT가 폴더 이름만으로 파일을 찾게 하려면 Google Drive 연결 등 별도의 파일 검색 경로가 있어야 합니다. 원격 서비스는 로컬 맥북·CLI에 의존하지 않습니다.
+[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 지정해 전사할 수 있습니다. 서버가 제공하는 도구는 `transcribe_audio(file_id, keywords=None, prompt="", retry=False)`, `get_transcription_status(operation)` 두 개입니다. `keywords`에는 실제 녹음에 등장할 가능성이 있는 이름·전문용어를, `prompt`에는 짧은 사실관계(예: `기술 강의 녹음`)를 **선택적으로** 전달할 수 있습니다. 이 정보는 인식 힌트이지 전사해야 할 발언이 아니므로 실제 녹음에 없는 대사를 제공하지 마세요. 기존 TXT가 있으면 힌트를 추가해도 자동 재전사하거나 덮어쓰지 않습니다. **같은 Google Drive 파일 ID의 요청을 반복하면** 별도 Cloud Run Job을 생성하지 않고 기존 실행 상태를 반환합니다. 완료·실패한 파일을 의도적으로 재전사하려면 `retry=True`를 명시해야 하며, 다시 실행하면 OpenAI API 사용료가 발생할 수 있습니다. 이전 요청이 실행 여부를 확인할 수 없게 끝났다면 최소 2시간 후 명시적으로만 재시도를 허용합니다. **ScribeFlow 자체에는 Drive 파일명 검색 도구가 없습니다.** ChatGPT가 폴더 이름만으로 파일을 찾게 하려면 Google Drive 연결 등 별도의 파일 검색 경로가 있어야 합니다. 원격 서비스는 로컬 맥북·CLI에 의존하지 않습니다.
 
 ## 원문 보존과 오디오 처리
 
