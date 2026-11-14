@@ -22,7 +22,7 @@ COLLECTION = "scribeflow_job_claims"
 # A Cloud Run task times out after 1 hour; an unknown submission must not be
 # retried automatically, including after this safety window.
 UNKNOWN_SUBMISSION_RETRY_SECONDS = 2 * 60 * 60
-CLAIM_RETENTION_DAYS = 30
+CLAIM_RETENTION_DAYS = 7
 
 
 def _starting_document(now: int) -> dict:
