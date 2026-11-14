@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .cloud_run import _FILE_ID, CloudRunJobs, normalize_transcription_context
@@ -21,12 +22,19 @@ COLLECTION = "scribeflow_job_claims"
 # A Cloud Run task times out after 1 hour; an unknown submission must not be
 # retried automatically, including after this safety window.
 UNKNOWN_SUBMISSION_RETRY_SECONDS = 2 * 60 * 60
+CLAIM_RETENTION_DAYS = 30
 
 
 def _starting_document(now: int) -> dict:
+    # TTL is deliberately much longer than the Cloud Run task's one-hour limit.
+    expires = (
+        datetime.fromtimestamp(now, tz=timezone.utc)
+        + timedelta(days=CLAIM_RETENTION_DAYS)
+    ).isoformat(timespec="seconds").replace("+00:00", "Z")
     return {"fields": {
         "started_at": {"integerValue": str(now)},
         "operation": {"stringValue": ""},
+        "expires_at": {"timestampValue": expires},
     }}
 
 
@@ -90,6 +98,7 @@ class FirestoreJobClaims:
             json={"fields": {
                 "started_at": fields["started_at"],
                 "operation": {"stringValue": operation},
+                "expires_at": fields["expires_at"],
             }},
             timeout=20,
         )
@@ -159,10 +168,27 @@ class DeduplicatingCloudRunJobs:
                 try:
                     current = self.backend.status(operation)
                 except Exception:
-                    # Status API down: never assume the job stopped.
+                    # An operation may eventually expire from the Cloud Run API.
+                    # A deliberate retry after the safety window is possible,
+                    # but never automatically triggered.
+                    try:
+                        age = now - int(
+                            existing["fields"]["started_at"]["integerValue"]
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        age = 0
+                    if retry and age >= UNKNOWN_SUBMISSION_RETRY_SECONDS:
+                        claim = self.claims.reset(key, existing, now)
+                        if claim is not None:
+                            return self._submit(
+                                key, claim, file_id, normalized, prompt
+                            )
+                        continue
                     return {
-                        "status": "already_submitted", "operation": operation,
+                        "status": "operation_unavailable",
+                        "operation": operation,
                         "duplicate": True,
+                        "retry_requires_confirmation": True,
                     }
                 state = current.get("status")
                 if state in ("failed", "completed") and retry:
