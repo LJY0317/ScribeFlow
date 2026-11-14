@@ -168,6 +168,7 @@ def resolve_source(source: str) -> str:
 
 def paths_for(source: str, output: str | None = None) -> Paths:
     source = resolve_source(source)
+    _require_supported_audio_path(source)
     if is_remote(source):
         remote, relative = _remote_parts(source)
         if output is None:
