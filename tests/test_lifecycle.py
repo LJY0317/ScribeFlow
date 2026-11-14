@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from scribeflow.cache import cache_stats, clean_cache, retain_failed_cache
 from scribeflow.engine import transcribe_file
-from scribeflow.pipeline import transcribe
+from scribeflow.pipeline import NoSpeechDetectedError, transcribe
 from scribeflow.provenance import source_fingerprint
 
 
@@ -48,7 +48,7 @@ class PipelineLifecycleTests(unittest.TestCase):
                 with patch("scribeflow.pipeline.transcribe_file", side_effect=lambda s, p, **kw: fake_engine(
                     s, p, texts=(" \n", "\t"), **kw,
                 )):
-                    with self.assertRaisesRegex(ValueError, "발언이 없습니다"):
+                    with self.assertRaisesRegex(NoSpeechDetectedError, "발언이 없습니다"):
                         transcribe(str(source))
             self.assertEqual(source.read_bytes(), b"untouched audio")
             self.assertFalse(source.with_suffix(".txt").exists())
@@ -150,6 +150,58 @@ class PipelineLifecycleTests(unittest.TestCase):
             self.assertEqual(cache_stats(cache)["jobs"], 1)
             self.assertEqual(clean_cache(cache)["jobs"], 0)
             self.assertEqual(source.read_bytes(), b"audio")
+
+
+class CloudTemporaryStorageTests(unittest.TestCase):
+    def test_cloud_job_cleans_private_audio_and_credentials_on_exit(self):
+        from scribeflow.cloud_worker import run_job
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secret = root / "rclone.conf"
+            secret.write_text("[gdrive]\ntype = drive\n", encoding="utf-8")
+            original_temporary_directory = tempfile.TemporaryDirectory
+
+            for fail in (False, True):
+                with self.subTest(fail=fail):
+                    created = []
+
+                    def capture_temporary_dir(*args, **kwargs):
+                        instance = original_temporary_directory(*args, **kwargs)
+                        created.append(Path(instance.name))
+                        return instance
+
+                    def simulate_transcription(file_id):
+                        cloud_cache = Path(os.environ["SCRIBEFLOW_CACHE_DIR"])
+                        cloud_cache.mkdir(parents=True, exist_ok=True)
+                        (cloud_cache / "fake-segment.mp3").write_bytes(b"temporary bytes")
+                        if fail:
+                            raise RuntimeError("synthetic failed upload")
+                        return {"ok": True, "status": "created"}
+
+                    with patch.dict(os.environ, {
+                        "OPENAI_API_KEY": "test-only",
+                        "SCRIBEFLOW_SOURCE_FILE_ID": "file_" + "a" * 26,
+                        "SCRIBEFLOW_RCLONE_CONFIG_SECRET": str(secret),
+                        "SCRIBEFLOW_KEYWORDS_JSON": "[]",
+                        "SCRIBEFLOW_PROMPT": "",
+                    }):
+                        with patch(
+                            "scribeflow.cloud_worker.tempfile.TemporaryDirectory",
+                            side_effect=capture_temporary_dir,
+                        ):
+                            with patch(
+                                "scribeflow.cloud_worker.transcribe",
+                                side_effect=simulate_transcription,
+                            ):
+                                if fail:
+                                    with self.assertRaisesRegex(RuntimeError, "upload"):
+                                        run_job()
+                                else:
+                                    self.assertEqual(run_job()["status"], "created")
+                    self.assertEqual(len(created), 1)
+                    self.assertFalse(created[0].exists())
+                    self.assertTrue(secret.exists())
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
