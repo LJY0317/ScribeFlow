@@ -389,6 +389,10 @@ def _publish_remote(contents: str, destination: str, job_dir: Path) -> None:
         raise RuntimeError("Google Drive 결과 업로드 검증에 실패했습니다. 기존 문서를 덮어쓰지 않았습니다.")
 
 
+class NoSpeechDetectedError(ValueError):
+    """No recognizable speech was returned; do not publish a blank TXT."""
+
+
 def plain_transcript(job_dir: Path) -> str:
     """Publish only recognized speech, never generated headings or metadata."""
     manifest = json.loads((job_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -488,7 +492,7 @@ def _transcribe_locked(
                 )
                 recognized = plain_transcript(job_dir)
                 if not recognized.strip():
-                    raise ValueError(
+                    raise NoSpeechDetectedError(
                         "음성에서 인식된 발언이 없습니다. "
                         "비어 있는 TXT는 생성하지 않았습니다."
                     )
