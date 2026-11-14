@@ -156,5 +156,108 @@ class DriveLookupTests(unittest.TestCase):
                 self.assertIsNone(candidate_from_id(FILE_ID))
 
 
+class VerifiedPipelineLookupTests(unittest.TestCase):
+    def test_verified_metadata_path_avoids_recursive_listing(self):
+        from scribeflow.pipeline import resolve_source
+
+        commands = []
+
+        def rclone(*args):
+            commands.append(args)
+            if args[0] == "about":
+                return type("R", (), {"stdout": "{}"})()
+            self.assertEqual(
+                args, ("lsjson", "gdrive:강의/녹음.m4a", "--stat"),
+            )
+            return type("R", (), {"stdout": json.dumps({
+                "ID": FILE_ID, "IsDir": False,
+            })})()
+
+        with patch.dict(os.environ, {
+            "RCLONE_CONFIG": "/private/test-config",
+            "SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID": "",
+        }):
+            with patch("scribeflow.pipeline.candidate_from_id", return_value=DrivePathCandidate(
+                "강의/녹음.m4a", False,
+            )):
+                with patch("scribeflow.pipeline.run_rclone", side_effect=rclone):
+                    self.assertEqual(resolve_source(FILE_ID), "gdrive:강의/녹음.m4a")
+
+        self.assertEqual([call[0] for call in commands], ["about", "lsjson"])
+        self.assertNotIn("-R", repr(commands))
+
+    def test_shared_path_mismatch_falls_back_safely(self):
+        from scribeflow.pipeline import resolve_source
+
+        calls = []
+
+        def rclone(*args):
+            calls.append(args)
+            if args[0] == "about":
+                result = "{}"
+            elif args[-1] == "--stat":
+                self.assertEqual(os.environ.get("RCLONE_DRIVE_SHARED_WITH_ME"), "true")
+                result = json.dumps({"ID": "different_file_id"})
+            elif args[0] == "lsjson" and "-R" in args:
+                result = json.dumps([{
+                    "ID": FILE_ID, "Path": "공유폴더/녹음.m4a",
+                    "MimeType": "audio/x-m4a",
+                }])
+            else:
+                raise AssertionError(args)
+            return type("R", (), {"stdout": result})()
+
+        with patch.dict(os.environ, {
+            "RCLONE_CONFIG": "/private/test-config",
+            "SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID": "",
+        }):
+            os.environ.pop("RCLONE_DRIVE_SHARED_WITH_ME", None)
+            with patch("scribeflow.pipeline.candidate_from_id", return_value=DrivePathCandidate(
+                "잘못된폴더/녹음.m4a", True,
+            )):
+                with patch("scribeflow.pipeline.run_rclone", side_effect=rclone):
+                    resolved = resolve_source(FILE_ID)
+            self.assertEqual(resolved, "gdrive:공유폴더/녹음.m4a")
+            self.assertEqual(os.environ.get("RCLONE_DRIVE_SHARED_WITH_ME"), "true")
+
+        self.assertTrue(any("-R" in call for call in calls))
+
+    def test_unsupported_suffix_is_rejected_before_download(self):
+        from scribeflow.pipeline import paths_for
+        with patch("scribeflow.pipeline.run_rclone") as rclone:
+            for suffix in (".aac", ".qta", ".opus", ".wma", ".txt"):
+                with self.subTest(suffix=suffix):
+                    with self.assertRaisesRegex(ValueError, "지원하지 않는"):
+                        paths_for("gdrive:folder/녹음" + suffix)
+            rclone.assert_not_called()
+
+    def test_scan_only_lists_engine_supported_extensions(self):
+        from scribeflow.engine import SUPPORTED_AUDIO_SUFFIXES
+        from scribeflow.pipeline import scan_drive
+        entries = [
+            {
+                "Path": "test." + ext, "ID": "id_" + ext,
+                "MimeType": "audio/mpeg" if ext in ("aac", "mp3") else "video/mp4",
+            }
+            for ext in ("aac", "qta", "opus", "wma", "m4a", "mp3", "webm", "mp4", "flac")
+        ]
+        with patch("scribeflow.pipeline.run_rclone", return_value=type("R", (), {
+            "stdout": json.dumps(entries),
+        })()):
+            result = scan_drive("gdrive:")
+        expected = {
+            "m4a", "mp3", "webm", "mp4", "flac",
+        }
+        self.assertEqual(result["total_audio"], len(expected))
+        self.assertEqual(
+            {Path(item["name"]).suffix[1:] for item in result["untranscribed"]},
+            expected,
+        )
+        self.assertEqual(
+            {("." + ext) for ext in expected}.issubset(SUPPORTED_AUDIO_SUFFIXES),
+            True,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
