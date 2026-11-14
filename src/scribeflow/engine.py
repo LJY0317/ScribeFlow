@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import re
@@ -265,6 +266,27 @@ def prepare_stream_copy_chunks(
             seconds = max(1, int(seconds * 0.75))
 
 
+def publish_prepared_chunk(source: Path, destination: Path) -> None:
+    """Install a validated chunk atomically, without duplicating large files.
+
+    A rename on the same filesystem is instantaneous and does not make another
+    copy of the audio. For separate filesystems, copy via a temporary name so
+    a crash cannot leave a truncated chunk that a resume would upload.
+    """
+    try:
+        source.replace(destination)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        temp = destination.with_name(destination.name + ".part")
+        try:
+            shutil.copyfile(source, temp)
+            temp.replace(destination)
+        finally:
+            if temp.exists():
+                temp.unlink()
+
+
 def clock(seconds: float) -> str:
     whole = max(0, int(seconds))
     hours, rem = divmod(whole, 3600)
@@ -360,10 +382,7 @@ def transcribe_file(
                 chunk_dir.mkdir(exist_ok=True)
                 for chunk in chunks:
                     suffix = f"{chunk.name}{source.suffix.lower()}"
-                    destination = chunk_dir / suffix
-                    temporary = chunk_dir / (suffix + ".part")
-                    shutil.copyfile(stage / suffix, temporary)
-                    temporary.replace(destination)
+                    publish_prepared_chunk(stage / suffix, chunk_dir / suffix)
 
     chunk_dir.mkdir(exist_ok=True)
     text_dir.mkdir(exist_ok=True)
