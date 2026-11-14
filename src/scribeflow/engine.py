@@ -334,17 +334,36 @@ def transcribe_file(
             raise ValueError("출력 폴더에 다른 파일이 있습니다. 빈 폴더를 지정하세요.")
         if direct:
             chunks = [Chunk(1, 0.0, round(info["duration_seconds"], 3))]
+            config = {**base_config, "chunks": [chunk.as_dict() for chunk in chunks]}
+            output.mkdir(parents=True, exist_ok=True)
+            write_text_atomic(
+                manifest, json.dumps(config, ensure_ascii=False, indent=2)
+            )
         else:
             seconds = chunk_seconds if chunk_seconds is not None else auto_chunk_seconds(
                 info["duration_seconds"], info["size_bytes"]
             )
-            chunks = prepare_stream_copy_chunks(
-                source, info["duration_seconds"], seconds,
-                overlap_seconds, chunk_dir,
-            )
-        config = {**base_config, "chunks": [chunk.as_dict() for chunk in chunks]}
-        output.mkdir(parents=True, exist_ok=True)
-        write_text_atomic(manifest, json.dumps(config, ensure_ascii=False, indent=2))
+            # Validate the complete split off to the side before touching the
+            # resumable output directory. A crash during preflight cannot leave
+            # audio_chunks without a manifest and permanently block retry.
+            with tempfile.TemporaryDirectory(prefix="scribeflow-validated-") as directory:
+                stage = Path(directory)
+                chunks = prepare_stream_copy_chunks(
+                    source, info["duration_seconds"], seconds,
+                    overlap_seconds, stage,
+                )
+                config = {**base_config, "chunks": [chunk.as_dict() for chunk in chunks]}
+                output.mkdir(parents=True, exist_ok=True)
+                write_text_atomic(
+                    manifest, json.dumps(config, ensure_ascii=False, indent=2)
+                )
+                chunk_dir.mkdir(exist_ok=True)
+                for chunk in chunks:
+                    suffix = f"{chunk.name}{source.suffix.lower()}"
+                    destination = chunk_dir / suffix
+                    temporary = chunk_dir / (suffix + ".part")
+                    shutil.copyfile(stage / suffix, temporary)
+                    temporary.replace(destination)
 
     chunk_dir.mkdir(exist_ok=True)
     text_dir.mkdir(exist_ok=True)
