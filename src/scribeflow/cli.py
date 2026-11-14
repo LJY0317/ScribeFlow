@@ -59,7 +59,10 @@ def main(argv: list[str] | None = None) -> int:
         help="구간 길이(초). 미지정 시 음질을 유지하며 25MB 한도 내 최대한 길게",
     )
     command.add_argument("--overlap-seconds", type=int, default=3)
-    command.add_argument("--language", default="ko")
+    command.add_argument(
+        "--language", default="ko",
+        help="언어 코드(기본 ko), 또는 자동 감지하려면 auto",
+    )
     command.add_argument(
         "--keyword", action="append", default=[],
         help="고유명사 힌트 (여러 번 지정 가능)",

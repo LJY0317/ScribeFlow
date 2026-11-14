@@ -323,6 +323,11 @@ def transcribe_file(
     direct = info["size_bytes"] <= MAX_UPLOAD_BYTES and (
         chunk_seconds is None or chunk_seconds >= info["duration_seconds"]
     )
+    if not direct and info["audio_tracks"] != 1:
+        raise ValueError(
+            "분할이 필요한 다중 오디오 트랙 파일은 지원하지 않습니다. "
+            "한 트랙만 선택하면 다른 트랙의 발화가 유실될 수 있습니다."
+        )
     source_sha256 = hash_file(source)
     base_config = {
         "schema": 2,
@@ -423,7 +428,9 @@ def transcribe_file(
             f"{clock(chunk.start)}~{clock(chunk.end)} 전사 요청",
             file=sys.stderr, flush=True,
         )
-        payload = {"model": MODEL, "languages": [language]}
+        payload = {"model": MODEL}
+        if language != "auto":
+            payload["languages"] = [language]
         if keywords:
             payload["keywords"] = list(keywords)
         if prompt:

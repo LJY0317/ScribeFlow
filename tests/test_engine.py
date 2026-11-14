@@ -112,6 +112,39 @@ class LosslessAudioTests(unittest.TestCase):
             self.assertEqual(manifest["encoding"], "original")
             self.assertEqual(len(manifest["chunks"]), 1)
 
+    def test_auto_language_omits_api_language_hint(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = self.make_audio(root, ".mp3", duration=3)
+            payloads = []
+            def create(*, file, **payload):
+                payloads.append(payload)
+                return SimpleNamespace(text="hello")
+            client = SimpleNamespace(
+                audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create))
+            )
+            with patch("scribeflow.engine.get_api_key", return_value="test"), \
+                 patch("openai.OpenAI", return_value=client):
+                transcribe_file(source, root / "auto", language="auto")
+            self.assertEqual(payloads, [{"model": "gpt-transcribe"}])
+
+    def test_multitrack_split_rejects_without_dropping_second_track(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "two-tracks.mp4"
+            subprocess.run([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=880:duration=3",
+                "-map", "0:a", "-map", "1:a",
+                "-c:a", "aac", str(source),
+            ], check=True, capture_output=True)
+            with patch("scribeflow.engine.get_api_key", return_value="test"), \
+                 patch("scribeflow.engine.MAX_UPLOAD_BYTES", 1):
+                with self.assertRaisesRegex(ValueError, "다중 오디오 트랙"):
+                    transcribe_file(source, root / "output")
+            self.assertFalse((root / "output").exists())
+
     def test_large_mp3_and_m4a_use_copy_only_and_fit_byte_limit(self):
         for suffix in (".mp3", ".m4a"):
             with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as folder:

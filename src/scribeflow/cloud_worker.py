@@ -10,7 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .cloud_run import normalize_transcription_context
+from .cloud_run import normalize_language, normalize_transcription_context
 from .pipeline import transcribe
 
 
@@ -22,6 +22,7 @@ def run_job() -> dict:
         json.loads(os.environ.get("SCRIBEFLOW_KEYWORDS_JSON") or "[]"),
         os.environ.get("SCRIBEFLOW_PROMPT", ""),
     )
+    language = normalize_language(os.environ.get("SCRIBEFLOW_LANGUAGE", "ko"))
 
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,}", file_id):
         raise ValueError("SCRIBEFLOW_SOURCE_FILE_ID must be a Google Drive file ID")
@@ -42,6 +43,10 @@ def run_job() -> dict:
         try:
             os.environ["RCLONE_CONFIG"] = str(config)
             os.environ["SCRIBEFLOW_CACHE_DIR"] = str(private / "cache")
+            if language != "ko":
+                return transcribe(
+                    file_id, keywords=keywords, prompt=prompt, language=language,
+                )
             if keywords or prompt:
                 return transcribe(file_id, keywords=keywords, prompt=prompt)
             return transcribe(file_id)

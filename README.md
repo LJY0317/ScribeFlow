@@ -42,6 +42,8 @@ scribeflow transcribe '/path/to/녹음.m4a' --json
 
 # 전문용어가 실제로 등장하는 녹음에만 인식 힌트를 선택적으로 제공
 scribeflow transcribe '/path/to/다른녹음.m4a' --keyword 'GitLab' --keyword 'EC2'
+# 언어를 모르는 파일에는 자동 감지 사용 (기본값은 한국어)
+scribeflow transcribe '/path/to/다국어녹음.m4a' --language auto
 ```
 
 ### Google Drive
@@ -71,7 +73,7 @@ scribeflow transcribe '파일_ID' --json
 
 ### ChatGPT 원격 MCP 사용
 
-[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 지정해 전사할 수 있습니다. 서버가 제공하는 도구는 `transcribe_audio(file_id, keywords=None, prompt="", retry=False)`, `get_transcription_status(operation)` 두 개입니다. `keywords`에는 실제 녹음에 등장할 가능성이 있는 이름·전문용어를, `prompt`에는 짧은 사실관계(예: `기술 강의 녹음`)를 **선택적으로** 전달할 수 있습니다. 이 정보는 인식 힌트이지 전사해야 할 발언이 아니므로 실제 녹음에 없는 대사를 제공하지 마세요. 기존 TXT가 있으면 힌트를 추가해도 자동 재전사하거나 덮어쓰지 않습니다. **같은 Google Drive 파일 ID의 요청을 반복하면** 별도 Cloud Run Job을 생성하지 않고 기존 실행 상태를 반환합니다. 완료·실패한 파일을 의도적으로 재전사하려면 `retry=True`를 명시해야 하며, 다시 실행하면 OpenAI API 사용료가 발생할 수 있습니다. 이전 요청의 실행 여부 또는 Cloud Run 기록을 확인할 수 없다면 최소 2시간 후 명시적으로만 재시도를 허용합니다. 작업 예약 기록은 7일의 만료 시각을 갖지만, 실제 자동 정리를 사용하려면 관리자가 `bash scripts/configure-claim-ttl.sh`로 Firestore TTL을 활성화해야 합니다. **ScribeFlow 자체에는 Drive 파일명 검색 도구가 없습니다.** ChatGPT가 폴더 이름만으로 파일을 찾게 하려면 Google Drive 연결 등 별도의 파일 검색 경로가 있어야 합니다. 원격 서비스는 로컬 맥북·CLI에 의존하지 않습니다.
+[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 지정해 전사할 수 있습니다. 서버가 제공하는 도구는 `transcribe_audio(file_id, keywords=None, prompt="", retry=False, language="ko")`, `get_transcription_status(operation)` 두 개입니다. `keywords`에는 실제 녹음에 등장할 가능성이 있는 이름·전문용어를, `prompt`에는 짧은 사실관계(예: `기술 강의 녹음`)를 **선택적으로** 전달할 수 있습니다. 이 정보는 인식 힌트이지 전사해야 할 발언이 아니므로 실제 녹음에 없는 대사를 제공하지 마세요. 기존 TXT가 있으면 힌트를 추가해도 자동 재전사하거나 덮어쓰지 않습니다. **같은 Google Drive 파일 ID의 요청을 반복하면** 별도 Cloud Run Job을 생성하지 않고 기존 실행 상태를 반환합니다. 완료·실패한 파일을 의도적으로 재전사하려면 `retry=True`를 명시해야 하며, 다시 실행하면 OpenAI API 사용료가 발생할 수 있습니다. 이전 요청의 실행 여부 또는 Cloud Run 기록을 확인할 수 없다면 최소 2시간 후 명시적으로만 재시도를 허용합니다. 작업 예약 기록은 7일의 만료 시각을 갖지만, 실제 자동 정리를 사용하려면 관리자가 `bash scripts/configure-claim-ttl.sh`로 Firestore TTL을 활성화해야 합니다. **ScribeFlow 자체에는 Drive 파일명 검색 도구가 없습니다.** ChatGPT가 폴더 이름만으로 파일을 찾게 하려면 Google Drive 연결 등 별도의 파일 검색 경로가 있어야 합니다. 원격 서비스는 로컬 맥북·CLI에 의존하지 않습니다.
 
 ## 원문 보존과 오디오 처리
 
@@ -80,6 +82,8 @@ scribeflow transcribe '파일_ID' --json
 - **지원 입력 형식:** `.flac`, `.mp3`, `.mp4`, `.mpeg`, `.mpga`, `.m4a`, `.ogg`, `.wav`, `.webm` (대소문자 구분 없음). Google Drive 파일 스캔·파일 ID 처리·전사 엔진이 같은 목록을 사용합니다. `.aac`, `.qta`, `.opus`, `.wma` 등은 자동으로 손실 변환하지 않고 명확히 거부합니다.
 - **원본 음성 보존:** 지원 형식이고 원본 크기가 25MB 이하이면 변환·분할 없이 그대로 OpenAI API에 전달합니다. 파일 크기가 초과할 때만 FFmpeg 스트림 복사(`-c:a copy`)로 원래 압축된 오디오를 유지하며 독립적으로 재생 가능한 조각을 만듭니다. 각 조각의 실제 크기를 API 호출 전에 검사하고, 크면 길이를 줄여 다시 분할합니다. 손실 재인코딩은 자동으로 하지 않습니다. 지원하지 않는 형식은 안내 후 중단합니다.
 - 큰 파일은 가급적 침묵 지점에서 나누고, 말 중간에서 나누는 경우 짧게 겹치도록 합니다. 스트림 복사에서는 코덱 프레임 경계에 따라 정확한 절단 시각이 조금 달라질 수 있습니다. 그 경계에서 발언이 중복·누락될 가능성은 완전히 제거되지 않으며 ScribeFlow는 임의로 발언을 삭제하지 않습니다.
+- 기본 언어는 한국어(`ko`)입니다. 언어를 알 수 없으면 CLI `--language auto` 또는 MCP `language="auto"`로 모델 자체 감지를 사용할 수 있습니다. 별도의 1차 전사나 음질 변환은 하지 않습니다.
+- 25MB 이하의 다중 오디오 트랙 파일은 원본 그대로 전달합니다. 분할이 필요한 다중 트랙 파일은 일부 트랙을 조용히 누락시키지 않도록 명시적으로 중단합니다.
 - 최종 사용자 폴더에는 원본 오디오와 같은 이름의 `.txt`만 추가됩니다. Drive 원본도 변경하지 않습니다.
 - 전사 시 오디오 내용은 OpenAI API로 전송됩니다. 개인정보 및 녹음 활용 권한을 확인하세요.
 
