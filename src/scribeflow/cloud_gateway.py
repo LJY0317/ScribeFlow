@@ -87,19 +87,20 @@ def create_server():
             "Optional keywords are literal names or terms that may be spoken; "
             "prompt is brief factual context, never invented dialogue. "
             "Existing transcripts are not overwritten. Repeated requests for "
-            "the same file reuse the existing job. Explicit retry_failed=True "
-            "is required after failure or an unconfirmed stale submission."
+            "the same file reuse the existing job. Explicit retry=True "
+            "is required to repeat a completed/failed job or stale submission; "
+            "retrying can incur new API charges."
         ),
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False),
     )
     def transcribe_audio(
         file_id: str, keywords: list[str] | None = None, prompt: str = "",
-        retry_failed: bool = False,
+        retry: bool = False,
     ) -> dict:
         _require_owner(owner_email)
         return backend.start(
             file_id, keywords=keywords, prompt=prompt,
-            retry_failed=retry_failed,
+            retry=retry,
         )
 
     @server.tool(
