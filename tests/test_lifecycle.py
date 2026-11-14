@@ -171,7 +171,7 @@ class CloudTemporaryStorageTests(unittest.TestCase):
                         created.append(Path(instance.name))
                         return instance
 
-                    def simulate_transcription(file_id):
+                    def simulate_transcription(file_id, **kwargs):
                         cloud_cache = Path(os.environ["SCRIBEFLOW_CACHE_DIR"])
                         cloud_cache.mkdir(parents=True, exist_ok=True)
                         (cloud_cache / "fake-segment.mp3").write_bytes(b"temporary bytes")

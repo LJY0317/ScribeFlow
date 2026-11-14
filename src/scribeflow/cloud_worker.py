@@ -43,8 +43,6 @@ def run_job() -> dict:
         try:
             os.environ["RCLONE_CONFIG"] = str(config)
             os.environ["SCRIBEFLOW_CACHE_DIR"] = str(private / "cache")
-            if language == "auto" and not keywords and not prompt:
-                return transcribe(file_id)
             return transcribe(
                 file_id, keywords=keywords, prompt=prompt, language=language,
             )
