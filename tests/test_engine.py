@@ -1,3 +1,4 @@
+import errno
 import json
 import shutil
 import subprocess
@@ -12,7 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from scribeflow.engine import (
     MAX_UPLOAD_BYTES, auto_chunk_seconds, clock, plan_chunks,
-    plan_audio_chunks, prepare_stream_copy_chunks, transcribe_file,
+    plan_audio_chunks, prepare_stream_copy_chunks, publish_prepared_chunk,
+    transcribe_file,
 )
 from scribeflow.credentials import get_api_key
 
@@ -197,7 +199,7 @@ class LosslessAudioTests(unittest.TestCase):
                     with patch("scribeflow.engine.get_api_key", return_value="test"):
                         with patch("openai.OpenAI", return_value=client):
                             with patch(
-                                "scribeflow.engine.shutil.copyfile",
+                                "scribeflow.engine.publish_prepared_chunk",
                                 side_effect=OSError("simulated interrupted copy"),
                             ):
                                 with self.assertRaisesRegex(OSError, "interrupted"):
@@ -210,6 +212,28 @@ class LosslessAudioTests(unittest.TestCase):
             self.assertTrue(all(
                 0 < len(payload) <= 70_000 for _, payload in captured
             ))
+
+    def test_cross_filesystem_publish_uses_atomic_copy_fallback(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "validated.mp3"
+            destination = root / "published.mp3"
+            source.write_bytes(b"validated encoded audio")
+            original_replace = Path.replace
+            injected = {"raised": False}
+
+            def fail_rename_once(path, target):
+                if path == source and not injected["raised"]:
+                    injected["raised"] = True
+                    raise OSError(errno.EXDEV, "cross-filesystem rename")
+                return original_replace(path, target)
+
+            with patch.object(Path, "replace", fail_rename_once):
+                publish_prepared_chunk(source, destination)
+
+            self.assertTrue(injected["raised"])
+            self.assertEqual(destination.read_bytes(), b"validated encoded audio")
+            self.assertFalse((root / "published.mp3.part").exists())
 
     def test_unsupported_audio_is_not_lossily_converted(self):
         with tempfile.TemporaryDirectory() as folder:
