@@ -97,7 +97,7 @@ class FirestoreJobClaims:
 
 
 class DeduplicatingCloudRunJobs:
-    """Submit at most one job per source until an explicit failed/stale retry.
+    """Submit at most one job per source until an explicit terminal/stale retry.
 
     Ambiguous Cloud Run request errors deliberately leave a reservation behind
     instead of issuing a second possibly billable request.
@@ -135,13 +135,13 @@ class DeduplicatingCloudRunJobs:
 
     def start(
         self, file_id: str, keywords: list[str] | tuple[str, ...] | None = None,
-        prompt: str = "", retry_failed: bool = False,
+        prompt: str = "", retry: bool = False,
     ) -> dict:
         if not isinstance(file_id, str) or not _FILE_ID.fullmatch(file_id):
             raise ValueError("A valid Google Drive file ID is required")
         normalized, prompt = normalize_transcription_context(keywords, prompt)
-        if not isinstance(retry_failed, bool):
-            raise ValueError("retry_failed must be a boolean")
+        if not isinstance(retry, bool):
+            raise ValueError("retry must be a boolean")
 
         key = hashlib.sha256(file_id.encode("utf-8")).hexdigest()
         for _ in range(4):
@@ -165,7 +165,7 @@ class DeduplicatingCloudRunJobs:
                         "duplicate": True,
                     }
                 state = current.get("status")
-                if state == "failed" and retry_failed:
+                if state in ("failed", "completed") and retry:
                     claim = self.claims.reset(key, existing, now)
                     if claim is not None:
                         return self._submit(key, claim, file_id, normalized, prompt)
@@ -186,7 +186,7 @@ class DeduplicatingCloudRunJobs:
                 age = now - int(existing["fields"]["started_at"]["integerValue"])
             except (KeyError, TypeError, ValueError):
                 age = 0  # invalid data fails closed
-            if retry_failed and age >= UNKNOWN_SUBMISSION_RETRY_SECONDS:
+            if retry and age >= UNKNOWN_SUBMISSION_RETRY_SECONDS:
                 claim = self.claims.reset(key, existing, now)
                 if claim is not None:
                     return self._submit(key, claim, file_id, normalized, prompt)
