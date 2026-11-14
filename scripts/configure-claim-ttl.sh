@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Enable 30-day metadata retention for ScribeFlow-only Firestore job claims.
+# Enable 7-day metadata retention for ScribeFlow-only Firestore job claims.
 # This does not touch OAuth tokens, source audio, finished transcripts, or jobs.
 set -euo pipefail
 
@@ -14,5 +14,5 @@ gcloud firestore fields ttls update "$FIELD" \
   --project="$GCP_PROJECT" \
   --enable-ttl
 
-echo "Enabled TTL for $DATABASE/$COLLECTION.$FIELD; records expire 30 days after claim creation."
+echo "Enabled TTL for $DATABASE/$COLLECTION.$FIELD; records expire 7 days after claim creation."
 echo "Firestore TTL deletion is asynchronous and may incur small deletion charges."
