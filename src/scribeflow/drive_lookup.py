@@ -67,7 +67,7 @@ def _existing_access_token() -> str | None:
 
 
 def _drive_metadata(file_id: str, token: str) -> dict:
-    if not _ID.fullmatch(file_id):
+    if file_id != "root" and not _ID.fullmatch(file_id):
         raise ValueError("Invalid Google Drive metadata ID")
     query = urlencode({
         "fields": "id,name,mimeType,parents,trashed",
