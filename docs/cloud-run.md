@@ -126,7 +126,27 @@ ID는 `https://drive.google.com/file/d/FILE_ID/view`에서 확인합니다. **Sc
 
 **검증 사실(2026-11-13):** 공유받은 Drive 폴더의 M4A 약 0.84MB와 일반 Drive의 SSAFY M4A 약 68MB에서 기존 TXT를 휴지통으로 옮긴 뒤 새 TXT가 생성됐습니다. Linux CI의 Python 테스트 및 Docker 빌드도 통과했습니다. Windows 로컬 CLI 및 각 모바일 ChatGPT 앱은 별도 실기 검증 전입니다.
 
-**업데이트:** `git pull --ff-only`로 갱신한 뒤 **5단계의 두 배포 스크립트**를 재실행합니다. 기존 Google OAuth 클라이언트·OpenAI 키·Drive 인증을 재사용합니다. 새 Cloud Shell 세션에서는 `export` 환경변수를 다시 설정해야 하지만 Secret Manager의 비밀값은 유지됩니다.
+**기존 배포 업데이트:** `git switch main && git pull --ff-only`로 갱신한 뒤 아래 **읽기 전용 사전 점검**을 먼저 실행합니다. 이미 사용 중인 GCP 프로젝트, 구독 결제 상태, Cloud Run Job/MCP의 현재 이미지 참조, Firestore DB, Secret Manager의 활성 비밀, 최근 실행 내역을 확인합니다. 해당 명령은 서비스·비밀을 변경하거나 음성을 전사하지 않습니다.
+
+```bash
+cd ~/ScribeFlow
+git switch main
+git pull --ff-only
+export GCP_PROJECT='YOUR_EXISTING_PROJECT_ID'
+
+# 기존 Google OAuth Client ID / 로그인 이메일도 비공개 설정에서 복원
+# export SCRIBEFLOW_GOOGLE_CLIENT_ID='...'
+# export SCRIBEFLOW_GOOGLE_EMAIL='...'
+bash scripts/preflight-cloud-run.sh
+```
+
+사전 점검은 **현재 클라우드 설정에 접근 가능한 계정에서만** 실행할 수 있습니다. 비밀값이나 출력 전체를 공개 저장소·채팅에 붙여넣지 마세요. 실패하면 오류를 확인한 다음 배포를 중단하세요. 이미 진행 중인 전사 Job이 있다면 완료된 후 배포를 진행해야 합니다.
+
+사전 점검에 통과했다면 **5단계의 두 배포 스크립트**를 재실행합니다. 기존 Google OAuth 클라이언트·OpenAI 키·Drive 인증을 재사용합니다. 새 Cloud Shell 세션에서는 `export` 환경변수를 다시 설정해야 하지만 Secret Manager의 비밀값은 유지됩니다. Cloud Build 이미지 빌드와 Cloud Run 업데이트는 소액의 Google Cloud 비용이 발생할 수 있습니다. 배포 자체는 OpenAI 전사 API를 호출하지 않습니다.
+
+**배포 후 확인:** `bash scripts/audit-cloud-storage.sh`로 현재 서비스와 Job의 배포 이미지·이전 이미지, 이미지 정리 정책, Logging 보관 상태를 읽기 전용으로 확인합니다. `gcloud firestore fields ttls list --collection-group=scribeflow_job_claims --database=scribeflow-oauth --project="$GCP_PROJECT"`로 예약 기록의 TTL 활성화 여부를 검사합니다. TTL이 미설정일 때만 관리자가 `bash scripts/configure-claim-ttl.sh`를 선택적으로 실행할 수 있습니다. Artifact Registry의 자동 삭제 정책은 실행 중인 이미지 다이제스트와 롤백 버전을 확인하기 전에는 **활성화하지 않습니다.**
+
+**기능 검증:** `scripts/enable-mcp-access.sh`는 익명 MCP 요청의 401과 OAuth 메타데이터의 200을 확인합니다. 이는 유료 전사 API를 호출하지 않습니다. Google Drive의 실제 음성 한 건을 전사하는 품질 검증은 별도 API 사용료가 발생하므로, 최종 TXT가 없는 테스트 녹음과 정확한 기준문을 준비한 경우에만 실행합니다. 기존 녹음·TXT는 삭제하지 않고, 이미 TXT가 있는 파일은 기본적으로 건너뜁니다.
 
 ### 전사 엔진만 안전하게 재배포하기
 

@@ -36,6 +36,7 @@ jobs:
           bash -n scripts/configure-claim-ttl.sh
           bash -n scripts/deploy-worker-only.sh
           bash -n scripts/audit-cloud-storage.sh
+          bash -n scripts/preflight-cloud-run.sh
       - name: Validate conservative Artifact Registry policy template
         run: |
           python - <<'PY'
