@@ -172,7 +172,7 @@ class DeduplicationTests(unittest.TestCase):
         )
         self.assertEqual(self.backend.start.call_count, 2)
 
-    def test_claim_expiration_is_thirty_days_and_extended_on_retry(self):
+    def test_claim_expiration_is_seven_days_and_extended_on_retry(self):
         from datetime import datetime, timezone
 
         first = self.jobs.start(FILE_ID)
@@ -183,7 +183,7 @@ class DeduplicationTests(unittest.TestCase):
             record["fields"]["expires_at"]["timestampValue"].replace("Z", "+00:00")
         )
         self.assertEqual(
-            (expiry - datetime.fromtimestamp(self.now, tz=timezone.utc)).days, 30,
+            (expiry - datetime.fromtimestamp(self.now, tz=timezone.utc)).days, 7,
         )
         self.backend.status.return_value = {
             "status": "failed", "operation": OPERATION,

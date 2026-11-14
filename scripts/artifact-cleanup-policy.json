@@ -1,0 +1,21 @@
+[
+  {
+    "name": "delete-unused-untagged-after-90d",
+    "action": {
+      "type": "Delete"
+    },
+    "condition": {
+      "tagState": "untagged",
+      "olderThan": "90d"
+    }
+  },
+  {
+    "name": "keep-five-recent-per-package",
+    "action": {
+      "type": "Keep"
+    },
+    "mostRecentVersions": {
+      "keepCount": 5
+    }
+  }
+]

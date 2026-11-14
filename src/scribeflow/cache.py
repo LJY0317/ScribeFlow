@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import time
@@ -9,9 +10,21 @@ from pathlib import Path
 
 from filelock import FileLock, Timeout
 
-MAX_AGE_SECONDS = 7 * 24 * 60 * 60
-MAX_TOTAL_BYTES = 1024 ** 3  # 1 GiB across unfinished jobs.
+MAX_AGE_SECONDS = 24 * 60 * 60  # Keep failed retries only one day by default.
+MAX_TOTAL_BYTES = 256 * 1024 ** 2  # Soft budget for local incomplete jobs.
 MIN_IDLE_SECONDS_FOR_SIZE_CLEANUP = 60 * 60
+
+
+def retain_failed_cache() -> bool:
+    """Default to a short retry cache; allow strict zero-retention mode.
+
+    The Cloud Run worker already uses an ephemeral private temporary directory,
+    so this setting primarily controls local CLI failure artifacts.
+    """
+    policy = os.environ.get("SCRIBEFLOW_FAILED_CACHE_MODE", "retry").strip().lower()
+    if policy not in {"retry", "discard"}:
+        raise ValueError("SCRIBEFLOW_FAILED_CACHE_MODE must be 'retry' or 'discard'")
+    return policy == "retry"
 
 
 def job_lock(root: Path, signature: str) -> FileLock:
@@ -57,7 +70,10 @@ def clean_cache(root: Path) -> dict:
     removed = 0
     for last_used, path, size in sorted(candidates):
         age = now - last_used
-        if age < MAX_AGE_SECONDS and (
+        published = (path / ".published").is_file()
+        # A final TXT already exists for published jobs. Never keep their
+        # intermediate chunks solely because a previous cleanup failed.
+        if not published and age < MAX_AGE_SECONDS and (
             total <= MAX_TOTAL_BYTES or age < MIN_IDLE_SECONDS_FOR_SIZE_CLEANUP
         ):
             continue

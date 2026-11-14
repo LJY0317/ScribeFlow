@@ -71,7 +71,7 @@ scribeflow transcribe '파일_ID' --json
 
 ### ChatGPT 원격 MCP 사용
 
-[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 지정해 전사할 수 있습니다. 서버가 제공하는 도구는 `transcribe_audio(file_id, keywords=None, prompt="", retry=False)`, `get_transcription_status(operation)` 두 개입니다. `keywords`에는 실제 녹음에 등장할 가능성이 있는 이름·전문용어를, `prompt`에는 짧은 사실관계(예: `기술 강의 녹음`)를 **선택적으로** 전달할 수 있습니다. 이 정보는 인식 힌트이지 전사해야 할 발언이 아니므로 실제 녹음에 없는 대사를 제공하지 마세요. 기존 TXT가 있으면 힌트를 추가해도 자동 재전사하거나 덮어쓰지 않습니다. **같은 Google Drive 파일 ID의 요청을 반복하면** 별도 Cloud Run Job을 생성하지 않고 기존 실행 상태를 반환합니다. 완료·실패한 파일을 의도적으로 재전사하려면 `retry=True`를 명시해야 하며, 다시 실행하면 OpenAI API 사용료가 발생할 수 있습니다. 이전 요청의 실행 여부 또는 Cloud Run 기록을 확인할 수 없다면 최소 2시간 후 명시적으로만 재시도를 허용합니다. 작업 예약 기록은 30일의 만료 시각을 갖지만, 실제 자동 정리를 사용하려면 관리자가 `bash scripts/configure-claim-ttl.sh`로 Firestore TTL을 활성화해야 합니다. **ScribeFlow 자체에는 Drive 파일명 검색 도구가 없습니다.** ChatGPT가 폴더 이름만으로 파일을 찾게 하려면 Google Drive 연결 등 별도의 파일 검색 경로가 있어야 합니다. 원격 서비스는 로컬 맥북·CLI에 의존하지 않습니다.
+[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 지정해 전사할 수 있습니다. 서버가 제공하는 도구는 `transcribe_audio(file_id, keywords=None, prompt="", retry=False)`, `get_transcription_status(operation)` 두 개입니다. `keywords`에는 실제 녹음에 등장할 가능성이 있는 이름·전문용어를, `prompt`에는 짧은 사실관계(예: `기술 강의 녹음`)를 **선택적으로** 전달할 수 있습니다. 이 정보는 인식 힌트이지 전사해야 할 발언이 아니므로 실제 녹음에 없는 대사를 제공하지 마세요. 기존 TXT가 있으면 힌트를 추가해도 자동 재전사하거나 덮어쓰지 않습니다. **같은 Google Drive 파일 ID의 요청을 반복하면** 별도 Cloud Run Job을 생성하지 않고 기존 실행 상태를 반환합니다. 완료·실패한 파일을 의도적으로 재전사하려면 `retry=True`를 명시해야 하며, 다시 실행하면 OpenAI API 사용료가 발생할 수 있습니다. 이전 요청의 실행 여부 또는 Cloud Run 기록을 확인할 수 없다면 최소 2시간 후 명시적으로만 재시도를 허용합니다. 작업 예약 기록은 7일의 만료 시각을 갖지만, 실제 자동 정리를 사용하려면 관리자가 `bash scripts/configure-claim-ttl.sh`로 Firestore TTL을 활성화해야 합니다. **ScribeFlow 자체에는 Drive 파일명 검색 도구가 없습니다.** ChatGPT가 폴더 이름만으로 파일을 찾게 하려면 Google Drive 연결 등 별도의 파일 검색 경로가 있어야 합니다. 원격 서비스는 로컬 맥북·CLI에 의존하지 않습니다.
 
 ## 원문 보존과 오디오 처리
 
@@ -87,10 +87,11 @@ scribeflow transcribe '파일_ID' --json
 
 GitHub에서 받은 소스 폴더에서 실행하는 경우 캐시는 **프로젝트 내부 `.scribeflow/cache/`**에 저장됩니다. 이 폴더는 Git 업로드 대상에서 제외됩니다. 별도로 패키지만 설치해 사용하는 경우에는 OS 표준 사용자 캐시 폴더를 사용합니다. 필요하면 `SCRIBEFLOW_CACHE_DIR`로 경로를 변경할 수 있습니다. 필요한 경우 원본 코덱을 보존한 분할본, 구간별 전사문, manifest 및 잠금 파일은 이 캐시에만 생성됩니다.
 
-- **성공 후 즉시 제거**, 실패한 작업만 이어서 실행할 수 있도록 보관합니다.
-- 실패 캐시는 7일 또는 전체 1GiB 한도 기준으로 오래된 작업부터 정리합니다. 활성 작업은 잠금으로 보호합니다.
-- `scribeflow cache status`로 확인하고 `scribeflow cache clean`으로 정리합니다. 정리는 전사 시작 때도 수행합니다. 상시 백그라운드 서비스는 없습니다.
-- 실패 캐시를 삭제하거나 API에 이미 도달한 요청이 중단되면 재시도 시 비용이 추가 발생할 수 있습니다.
+- **성공한 전사는 최종 TXT만 게시하고 중간 작업 파일을 즉시 제거합니다.** 큰 녹음은 각 오디오 구간의 전사문이 저장되는 즉시 해당 오디오 조각도 제거합니다. Google Drive에는 원본 녹음과 최종 TXT만 남으며, 빈 발언만 반환된 경우에는 내용 없는 TXT를 게시하지 않습니다.
+- 로컬 CLI에서 **실패한 전사 캐시의 기본 보존 기간은 24시간**, 전체 **256MiB는 소프트 용량 예산**입니다. 만료되거나 초과해도 다음 전사 또는 수동 정리 시에만 정리되므로 실시간 절대 상한은 아닙니다. 활성 작업은 잠금으로 보호합니다.
+- 실패 시에도 중간 파일을 즉시 폐기하려면 `SCRIBEFLOW_FAILED_CACHE_MODE=discard`로 실행합니다. 기본값 `retry`는 부분 전사문을 잠깐 남겨 같은 조건의 재시도 때 API 비용을 줄입니다. **`discard`는 실패 후 재시도할 때 이미 처리된 음성도 다시 과금될 수 있습니다.**
+- `scribeflow cache status`로 남은 용량을 확인하고 `scribeflow cache clean`으로 정리합니다. 별도의 상시 청소 서비스는 없습니다.
+- 원격 Cloud Run Job은 성공·실패 모두 실행용 임시 파일시스템이 종료 시 사라집니다. 정상 완료 후에는 전사 캐시를 장기 보존하지 않으며, Firestore 예약 메타데이터는 별도 TTL 활성화가 필요합니다.
 
 ## 전사 정확도 비교 (별도 API 요금 없음)
 
