@@ -26,6 +26,8 @@ jobs:
           sudo apt-get install -y ffmpeg
           ffmpeg -version | head -n 1
           ffprobe -version | head -n 1
+      - name: Check deployment helper syntax
+        run: bash -n scripts/configure-claim-ttl.sh
       - name: Run tests
         run: uv run --extra cloud --python 3.11 python -m unittest discover -s tests -q
       - name: Build distribution
