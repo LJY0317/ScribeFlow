@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 
+from .cloud_dedup import DeduplicatingCloudRunJobs, FirestoreJobClaims
 from .cloud_run import CloudRunJobs, CloudRunTarget
 
 
@@ -70,20 +71,37 @@ def create_server():
         client_storage=store,
         require_authorization_consent=True,
     )
-    backend = CloudRunJobs(CloudRunTarget(
+    jobs = CloudRunJobs(CloudRunTarget(
         project=os.environ["GOOGLE_CLOUD_PROJECT"],
         region=os.environ.get("SCRIBEFLOW_REGION", "asia-northeast3"),
         job=os.environ.get("SCRIBEFLOW_JOB", "scribeflow-transcribe"),
     ))
+    backend = DeduplicatingCloudRunJobs(
+        jobs, FirestoreJobClaims(os.environ["GOOGLE_CLOUD_PROJECT"], jobs.session),
+    )
     server = FastMCP("ScribeFlow", auth=auth)
 
     @server.tool(
-        description="Transcribe one Google Drive audio by file ID; incurs OpenAI API charges.",
+        description=(
+            "Transcribe one Google Drive audio by file ID; incurs OpenAI API charges. "
+            "Optional keywords are literal names or terms that may be spoken; "
+            "prompt is brief factual context, never invented dialogue. "
+            "Existing transcripts are not overwritten. Repeated requests for "
+            "the same file reuse the existing job. Explicit retry=True "
+            "is required to repeat a completed/failed job or stale submission; "
+            "retrying can incur new API charges."
+        ),
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False),
     )
-    def transcribe_audio(file_id: str) -> dict:
+    def transcribe_audio(
+        file_id: str, keywords: list[str] | None = None, prompt: str = "",
+        retry: bool = False,
+    ) -> dict:
         _require_owner(owner_email)
-        return backend.start(file_id)
+        return backend.start(
+            file_id, keywords=keywords, prompt=prompt,
+            retry=retry,
+        )
 
     @server.tool(
         description="Check a submitted transcription without restarting it.",

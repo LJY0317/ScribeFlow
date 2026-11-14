@@ -10,6 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .cloud_run import normalize_transcription_context
 from .pipeline import transcribe
 
 
@@ -17,6 +18,10 @@ def run_job() -> dict:
     """Run one transcription; credentials are injected at deployment time."""
     file_id = os.environ.get("SCRIBEFLOW_SOURCE_FILE_ID", "").strip()
     config_secret = os.environ.get("SCRIBEFLOW_RCLONE_CONFIG_SECRET", "").strip()
+    keywords, prompt = normalize_transcription_context(
+        json.loads(os.environ.get("SCRIBEFLOW_KEYWORDS_JSON") or "[]"),
+        os.environ.get("SCRIBEFLOW_PROMPT", ""),
+    )
 
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,}", file_id):
         raise ValueError("SCRIBEFLOW_SOURCE_FILE_ID must be a Google Drive file ID")
@@ -37,6 +42,8 @@ def run_job() -> dict:
         try:
             os.environ["RCLONE_CONFIG"] = str(config)
             os.environ["SCRIBEFLOW_CACHE_DIR"] = str(private / "cache")
+            if keywords or prompt:
+                return transcribe(file_id, keywords=keywords, prompt=prompt)
             return transcribe(file_id)
         finally:
             if old_config is None:

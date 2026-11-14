@@ -20,10 +20,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .cache import clean_cache, job_lock
+from .drive_lookup import candidate_from_id
 from .engine import (
-    BITRATE_KBPS,
     MODEL,
-    auto_chunk_seconds,
+    SUPPORTED_AUDIO_SUFFIXES,
     hash_file,
     transcribe_file,
 )
@@ -74,11 +74,64 @@ def _drive_file_id(source: str) -> str | None:
     raise ValueError("지원하지 않는 Google Drive 파일 URL입니다.")
 
 
+def _require_supported_audio_path(path: str) -> None:
+    suffix = posixpath.splitext(path)[1].lower()
+    if suffix not in SUPPORTED_AUDIO_SUFFIXES:
+        raise ValueError(
+            f"지원하지 않는 오디오 확장자입니다: {suffix or '(없음)'}. "
+            "ScribeFlow는 손실 재인코딩을 자동 수행하지 않습니다."
+        )
+
+
+def _verified_fast_drive_path(file_id: str) -> str | None:
+    """Use O(folder depth) metadata lookup and verify the final rclone file ID.
+
+    Unsupported rclone setups and shared/shortcut discrepancies fall back to
+    the original recursive lookup. Never reveal the private rclone OAuth token.
+    """
+    if not os.environ.get("RCLONE_CONFIG"):
+        return None
+    root = os.environ.get("SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID") or None
+    try:
+        # Refresh the worker's private rclone config token if necessary.
+        run_rclone("about", "gdrive:")
+    except (OSError, RuntimeError, subprocess.CalledProcessError):
+        return None
+    candidate = candidate_from_id(file_id, root)
+    if candidate is None:
+        return None
+    _require_supported_audio_path(candidate.relative_path)
+    shared_before = os.environ.get("RCLONE_DRIVE_SHARED_WITH_ME")
+    enabled_shared = candidate.shared_with_me and shared_before is None
+    if enabled_shared:
+        os.environ["RCLONE_DRIVE_SHARED_WITH_ME"] = "true"
+    path = "gdrive:" + candidate.relative_path
+    matched = False
+    try:
+        metadata = json.loads(run_rclone("lsjson", path, "--stat").stdout)
+        matched = (
+            isinstance(metadata, dict)
+            and metadata.get("ID") == file_id
+            and not metadata.get("IsDir")
+        )
+        return path if matched else None
+    except (OSError, RuntimeError, subprocess.CalledProcessError, ValueError, TypeError):
+        return None
+    finally:
+        if enabled_shared and not matched:
+            os.environ.pop("RCLONE_DRIVE_SHARED_WITH_ME", None)
+
+
 def resolve_source(source: str) -> str:
     """Resolve Drive URL/ID to a scoped rclone path without downloading audio."""
     file_id = _drive_file_id(source)
     if file_id is None:
         return source
+
+    # Bounded metadata queries are much cheaper than listing an entire Drive.
+    fast = _verified_fast_drive_path(file_id)
+    if fast is not None:
+        return fast
 
     def find() -> dict | None:
         entries = json.loads(
@@ -109,19 +162,13 @@ def resolve_source(source: str) -> str:
             "Google Drive 파일 ID를 현재 rclone 연결에서 찾지 못했습니다. "
             "설정된 Drive 계정과 공유 권한을 확인하세요."
         )
-    if not (
-        str(metadata.get("MimeType", "")).startswith("audio/")
-        or Path(metadata["Path"]).suffix.lower() in {
-            ".m4a", ".mp3", ".wav", ".aac", ".ogg",
-            ".qta", ".webm", ".mp4", ".flac",
-        }
-    ):
-        raise ValueError("선택한 Google Drive 파일은 음성 녹음 형식이 아닙니다.")
+    _require_supported_audio_path(metadata["Path"])
     return "gdrive:" + metadata["Path"]
 
 
 def paths_for(source: str, output: str | None = None) -> Paths:
     source = resolve_source(source)
+    _require_supported_audio_path(source)
     if is_remote(source):
         remote, relative = _remote_parts(source)
         if output is None:
@@ -239,8 +286,7 @@ def remote_result_url(destination: str) -> str | None:
     return None
 
 
-# Scan only audio recordings by default; a directory can contain many videos.
-_AUDIO_SUFFIXES = {".m4a", ".mp3", ".wav", ".aac", ".ogg", ".qta", ".flac", ".opus", ".wma"}
+# Use the same supported extensions in Drive discovery and the transcription engine.
 
 
 def scan_drive(folder: str, recursive: bool = False, limit: int = 50) -> dict:
@@ -255,8 +301,8 @@ def scan_drive(folder: str, recursive: bool = False, limit: int = 50) -> dict:
     names = {e["Path"].casefold() for e in entries if e.get("Path") and not e.get("IsDir")}
     sources = sorted(
         (e for e in entries if not e.get("IsDir") and
-         (str(e.get("MimeType", "")).startswith("audio/") or
-          posixpath.splitext(e.get("Path", ""))[1].lower() in _AUDIO_SUFFIXES)),
+         posixpath.splitext(e.get("Path", ""))[1].lower()
+         in SUPPORTED_AUDIO_SUFFIXES),
         key=lambda e: e.get("Path", ""),
     )
     pending = []
@@ -412,7 +458,7 @@ def _transcribe_locked(
         else:
             local_source = Path(paths.source).resolve(strict=True)
 
-        effective_seconds = chunk_seconds if chunk_seconds is not None else auto_chunk_seconds()
+
         settings = {
             "model": MODEL,
             "source_filename": local_source.name,
@@ -420,9 +466,9 @@ def _transcribe_locked(
             "language": language,
             "keywords": list(keywords),
             "prompt": prompt,
-            "chunk_seconds": effective_seconds,
+            "chunk_seconds": chunk_seconds,
             "overlap_seconds": overlap_seconds,
-            "bitrate_kbps": BITRATE_KBPS,
+            "audio_strategy": "original-or-stream-copy-v1",
         }
         signature = hashlib.sha256(
             json.dumps(settings, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -433,7 +479,7 @@ def _transcribe_locked(
             ensure_free_destination(paths)
             try:
                 transcribe_file(
-                    local_source, job_dir, chunk_seconds=effective_seconds,
+                    local_source, job_dir, chunk_seconds=chunk_seconds,
                     overlap_seconds=overlap_seconds, language=language,
                     keywords=keywords, prompt=prompt,
                 )

@@ -61,6 +61,37 @@ class CloudWorkerTests(unittest.TestCase):
                     self.assertTrue(run_job()["ok"])
                 transcribe.assert_called_once_with("audio_" + "a" * 25)
 
+    def test_context_from_job_environment_reaches_transcription(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config-secret"
+            config.write_text("[gdrive]\ntype = drive\n", encoding="utf-8")
+            with patch.dict(os.environ, {
+                "SCRIBEFLOW_SOURCE_FILE_ID": "audio_" + "a" * 25,
+                "OPENAI_API_KEY": "fake",
+                "SCRIBEFLOW_RCLONE_CONFIG_SECRET": str(config),
+                "SCRIBEFLOW_KEYWORDS_JSON": '["대인접수", "하나손해보험"]',
+                "SCRIBEFLOW_PROMPT": "보험회사 상담 녹음",
+            }):
+                with patch(
+                    "scribeflow.cloud_worker.transcribe", return_value={"ok": True}
+                ) as transcribe:
+                    self.assertTrue(run_job()["ok"])
+                    transcribe.assert_called_once_with(
+                        "audio_" + "a" * 25,
+                        keywords=("대인접수", "하나손해보험"),
+                        prompt="보험회사 상담 녹음",
+                    )
+
+    def test_invalid_context_stops_before_transcription(self):
+        with patch.dict(os.environ, {
+            "SCRIBEFLOW_SOURCE_FILE_ID": "audio_" + "a" * 25,
+            "SCRIBEFLOW_KEYWORDS_JSON": '{"not": "a list"}',
+        }):
+            with patch("scribeflow.cloud_worker.transcribe") as transcribe:
+                with self.assertRaises(ValueError):
+                    run_job()
+                transcribe.assert_not_called()
+
     def test_job_error_does_not_log_secret(self):
         with patch("scribeflow.cloud_worker.run_job", side_effect=RuntimeError("API KEY SECRET")):
             with patch("sys.stderr") as stream:
