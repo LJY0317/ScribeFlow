@@ -53,17 +53,23 @@ class CloudRunTests(unittest.TestCase):
         self.assertEqual(env[1]["value"], '["대인접수", "하나손해보험"]')
         self.assertEqual(env[2]["value"], "보험회사와 통화한 녹음")
 
-    def test_auto_language_is_forwarded_without_changing_default(self):
+    def test_auto_default_and_explicit_language_hint(self):
         self.session.request.return_value = self._response({
             "name": self.prefix + "abcdef"
         })
-        self.api.start("testfile_" + "a" * 22, language="auto")
+        self.api.start("testfile_" + "a" * 22)
+        env = self.session.request.call_args.kwargs["json"]["overrides"][
+            "containerOverrides"
+        ][0]["env"]
+        self.assertEqual(len(env), 1)
+        self.api.start("testfile_" + "a" * 22, language="ko")
         env = self.session.request.call_args.kwargs["json"]["overrides"][
             "containerOverrides"
         ][0]["env"]
         self.assertEqual(env[-1], {
-            "name": "SCRIBEFLOW_LANGUAGE", "value": "auto",
+            "name": "SCRIBEFLOW_LANGUAGE", "value": "ko",
         })
+        self.api.start("testfile_" + "a" * 22, language="zh-cn")
         with self.assertRaises(ValueError):
             self.api.start("testfile_" + "a" * 22, language="bad language")
 

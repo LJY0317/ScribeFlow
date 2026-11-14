@@ -80,6 +80,7 @@ class CloudWorkerTests(unittest.TestCase):
                         "audio_" + "a" * 25,
                         keywords=("대인접수", "하나손해보험"),
                         prompt="보험회사 상담 녹음",
+                        language="auto",
                     )
 
     def test_auto_language_reaches_transcription(self):
@@ -97,9 +98,7 @@ class CloudWorkerTests(unittest.TestCase):
                 with patch("scribeflow.cloud_worker.transcribe",
                            return_value={"ok": True}) as transcribe:
                     run_job()
-                    transcribe.assert_called_once_with(
-                        "audio_" + "a" * 25, keywords=(), prompt="", language="auto",
-                    )
+                    transcribe.assert_called_once_with("audio_" + "a" * 25)
 
     def test_invalid_context_stops_before_transcription(self):
         with patch.dict(os.environ, {

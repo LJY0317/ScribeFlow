@@ -60,8 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     command.add_argument("--overlap-seconds", type=int, default=3)
     command.add_argument(
-        "--language", default="ko",
-        help="언어 코드(기본 ko), 또는 자동 감지하려면 auto",
+        "--language", default="auto",
+        help="자동 언어 감지(기본 auto), 또는 언어 코드(예: ko, en)",
     )
     command.add_argument(
         "--keyword", action="append", default=[],

@@ -125,8 +125,12 @@ class LosslessAudioTests(unittest.TestCase):
             )
             with patch("scribeflow.engine.get_api_key", return_value="test"), \
                  patch("openai.OpenAI", return_value=client):
-                transcribe_file(source, root / "auto", language="auto")
-            self.assertEqual(payloads, [{"model": "gpt-transcribe"}])
+                transcribe_file(source, root / "auto")
+                transcribe_file(source, root / "korean", language="ko")
+            self.assertEqual(payloads, [
+                {"model": "gpt-transcribe"},
+                {"model": "gpt-transcribe", "languages": ["ko"]},
+            ])
 
     def test_multitrack_split_rejects_without_dropping_second_track(self):
         with tempfile.TemporaryDirectory() as folder:

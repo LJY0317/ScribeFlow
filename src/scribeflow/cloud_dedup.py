@@ -144,7 +144,7 @@ class DeduplicatingCloudRunJobs:
 
     def start(
         self, file_id: str, keywords: list[str] | tuple[str, ...] | None = None,
-        prompt: str = "", retry: bool = False, language: str = "ko",
+        prompt: str = "", retry: bool = False, language: str = "auto",
     ) -> dict:
         if not isinstance(file_id, str) or not _FILE_ID.fullmatch(file_id):
             raise ValueError("A valid Google Drive file ID is required")

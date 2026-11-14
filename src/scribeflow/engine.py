@@ -296,7 +296,7 @@ def clock(seconds: float) -> str:
 
 def transcribe_file(
     source: Path, output: Path, chunk_seconds: int | None = None,
-    overlap_seconds: int = 3, language: str = "ko",
+    overlap_seconds: int = 3, language: str = "auto",
     keywords: tuple[str, ...] = (), prompt: str = "",
 ) -> Path:
     """Transcribe the original file when possible, otherwise stream-copy chunks."""
