@@ -113,7 +113,7 @@ class DeduplicationTests(unittest.TestCase):
         self.assertEqual(self.jobs.start(FILE_ID)["status"], "previous_failed")
         self.backend.start.assert_called_once()
         self.assertEqual(
-            self.jobs.start(FILE_ID, retry_failed=True)["status"], "submitted",
+            self.jobs.start(FILE_ID, retry=True)["status"], "submitted",
         )
         self.assertEqual(self.backend.start.call_count, 2)
 
@@ -132,7 +132,7 @@ class DeduplicationTests(unittest.TestCase):
             "status": "submitted", "operation": OPERATION,
         }
         self.assertEqual(
-            self.jobs.start(FILE_ID, retry_failed=True)["status"], "submitted",
+            self.jobs.start(FILE_ID, retry=True)["status"], "submitted",
         )
         self.backend.start.assert_called_once()
 
@@ -153,7 +153,7 @@ class DeduplicationTests(unittest.TestCase):
         for kwargs in (
             {"file_id": "../wrong-id"},
             {"file_id": FILE_ID, "keywords": [""]},
-            {"file_id": FILE_ID, "retry_failed": "yes"},
+            {"file_id": FILE_ID, "retry": "yes"},
         ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 self.jobs.start(**kwargs)
