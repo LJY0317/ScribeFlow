@@ -387,10 +387,25 @@ def transcribe_file(
     chunk_dir.mkdir(exist_ok=True)
     text_dir.mkdir(exist_ok=True)
 
+    def release_completed_chunk(chunk: Chunk) -> None:
+        """Free audio bytes immediately after a segment text is durable.
+
+        The original input is never touched. If resume needs a deleted chunk
+        again, render_chunk() can stream-copy it from that original file.
+        """
+        if direct:
+            return
+        chunk_path = chunk_dir / f"{chunk.name}{source.suffix.lower()}"
+        try:
+            chunk_path.unlink(missing_ok=True)
+        except OSError as exc:
+            print(f"주의: 전사 완료 구간 캐시 정리 실패: {exc}", file=sys.stderr)
+
     client = None
     for chunk in chunks:
         text_path = text_dir / (chunk.name + ".txt")
         if text_path.exists():
+            release_completed_chunk(chunk)
             print(f"[{chunk.index}/{len(chunks)}] 기존 전사문 재사용", file=sys.stderr)
             continue
         audio_path = (
@@ -419,5 +434,6 @@ def transcribe_file(
         if not isinstance(text, str):
             raise RuntimeError("API에서 텍스트 결과를 받지 못했습니다.")
         write_text_atomic(text_path, text.strip() + "\n")
+        release_completed_chunk(chunk)
 
     return output
