@@ -12,6 +12,7 @@ from .cache import cache_stats, clean_cache
 from .credentials import get_api_key, remove_saved_key, save_interactive
 from .engine import inspect_audio
 from .pipeline import cache_root, paths_for, scan_drive, transcribe
+from .quality import compare_transcripts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,6 +39,17 @@ def main(argv: list[str] | None = None) -> int:
 
     cache = sub.add_parser("cache", help="실패한 작업의 임시 캐시 확인·정리")
     cache.add_argument("action", choices=["status", "clean"])
+
+    evaluate = sub.add_parser(
+        "evaluate", help="사람이 검수한 기준 TXT와 두 전사본의 오류율 비교 (API 호출 없음)",
+    )
+    evaluate.add_argument("reference", type=Path, help="사람이 검수한 기준 전사문")
+    evaluate.add_argument("baseline", type=Path, help="기존 전사문")
+    evaluate.add_argument("candidate", type=Path, help="개선 버전 전사문")
+    evaluate.add_argument(
+        "--keyword", action="append", default=[],
+        help="비교할 고유명사·전문용어 (여러 번 지정 가능)",
+    )
 
     command = sub.add_parser("transcribe", help="구간별 전사 후 하나의 텍스트 저장")
     command.add_argument("audio", help="로컬 경로 또는 gdrive:폴더/녹음.m4a")
@@ -90,6 +102,14 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "cache":
             result = clean_cache(cache_root()) if args.action == "clean" else cache_stats(cache_root())
             print(json.dumps(result, ensure_ascii=False))
+        elif args.command == "evaluate":
+            result = compare_transcripts(
+                args.reference.read_text(encoding="utf-8-sig"),
+                args.baseline.read_text(encoding="utf-8-sig"),
+                args.candidate.read_text(encoding="utf-8-sig"),
+                keywords=args.keyword,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
             result = transcribe(
                 args.audio, args.output, chunk_seconds=args.chunk_seconds,

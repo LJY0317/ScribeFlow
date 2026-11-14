@@ -71,7 +71,7 @@ scribeflow transcribe '파일_ID' --json
 
 ### ChatGPT 원격 MCP 사용
 
-[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 지정해 전사할 수 있습니다. 서버가 제공하는 도구는 `transcribe_audio(file_id)`, `get_transcription_status(operation)` 두 개입니다. **ScribeFlow 자체에는 Drive 파일명 검색 도구가 없습니다.** ChatGPT가 폴더 이름만으로 파일을 찾게 하려면 Google Drive 연결 등 별도의 파일 검색 경로가 있어야 합니다. 원격 서비스는 로컬 맥북·CLI에 의존하지 않습니다.
+[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 지정해 전사할 수 있습니다. 서버가 제공하는 도구는 `transcribe_audio(file_id, keywords=None, prompt="", retry=False)`, `get_transcription_status(operation)` 두 개입니다. `keywords`에는 실제 녹음에 등장할 가능성이 있는 이름·전문용어를, `prompt`에는 짧은 사실관계(예: `기술 강의 녹음`)를 **선택적으로** 전달할 수 있습니다. 이 정보는 인식 힌트이지 전사해야 할 발언이 아니므로 실제 녹음에 없는 대사를 제공하지 마세요. 기존 TXT가 있으면 힌트를 추가해도 자동 재전사하거나 덮어쓰지 않습니다. **같은 Google Drive 파일 ID의 요청을 반복하면** 별도 Cloud Run Job을 생성하지 않고 기존 실행 상태를 반환합니다. 완료·실패한 파일을 의도적으로 재전사하려면 `retry=True`를 명시해야 하며, 다시 실행하면 OpenAI API 사용료가 발생할 수 있습니다. 이전 요청이 실행 여부를 확인할 수 없게 끝났다면 최소 2시간 후 명시적으로만 재시도를 허용합니다. **ScribeFlow 자체에는 Drive 파일명 검색 도구가 없습니다.** ChatGPT가 폴더 이름만으로 파일을 찾게 하려면 Google Drive 연결 등 별도의 파일 검색 경로가 있어야 합니다. 원격 서비스는 로컬 맥북·CLI에 의존하지 않습니다.
 
 ## 원문 보존과 오디오 처리
 
@@ -90,6 +90,16 @@ GitHub에서 받은 소스 폴더에서 실행하는 경우 캐시는 **프로�
 - 실패 캐시는 7일 또는 전체 1GiB 한도 기준으로 오래된 작업부터 정리합니다. 활성 작업은 잠금으로 보호합니다.
 - `scribeflow cache status`로 확인하고 `scribeflow cache clean`으로 정리합니다. 정리는 전사 시작 때도 수행합니다. 상시 백그라운드 서비스는 없습니다.
 - 실패 캐시를 삭제하거나 API에 이미 도달한 요청이 중단되면 재시도 시 비용이 추가 발생할 수 있습니다.
+
+## 전사 정확도 비교 (별도 API 요금 없음)
+
+같은 녹음을 대상으로 기존·개선 방식으로 만든 TXT와 **사람이 직접 검수한 기준 TXT**가 있으면 문자 오류율(CER)을 비교할 수 있습니다. 이 명령은 로컬 파일 세 개를 읽고 결과를 화면에 출력할 뿐, 녹음이나 TXT를 수정하거나 OpenAI API를 호출하지 않습니다.
+
+```bash
+scribeflow evaluate 기준.txt 기존.txt 개선.txt --keyword '하나손해보험' --keyword '대인접수'
+```
+
+출력되는 `baseline.cer`와 `candidate.cer`는 각각 기준 원문에 대한 정규화된 문자 편집 거리 비율로 **낮을수록 좋습니다**. 공백·문장부호·영문 대소문자·ScribeFlow SHA-256 주석은 비교에서 제외합니다. `cer_reduction`은 기존 오류율에서 개선 오류율을 뺀 값입니다. `keyword_occurrences_unaligned`는 전사문 전체에 나타난 용어 수만 세므로 특정 발언을 정확하게 맞혔다는 증거는 아닙니다. 사람 검수본이 없으면 정확도를 검증했다고 주장할 수 없습니다.
 
 ## 테스트
 

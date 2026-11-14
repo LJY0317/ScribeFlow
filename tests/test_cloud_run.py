@@ -35,6 +35,41 @@ class CloudRunTests(unittest.TestCase):
                          {"name": "SCRIBEFLOW_SOURCE_FILE_ID", "value": "testfile_" + "a" * 22})
         self.assertEqual(len(payload["overrides"]["containerOverrides"][0]["env"]), 1)
 
+    def test_optional_hints_are_sent_only_to_the_requested_job(self):
+        operation = self.prefix + "1234567890abcdef"
+        self.session.request.return_value = self._response({"name": operation})
+        self.api.start(
+            "testfile_" + "a" * 22,
+            keywords=["  대인접수  ", "하나손해보험"],
+            prompt="보험회사와 통화한 녹음",
+        )
+        env = self.session.request.call_args.kwargs["json"]["overrides"][
+            "containerOverrides"
+        ][0]["env"]
+        self.assertEqual([item["name"] for item in env], [
+            "SCRIBEFLOW_SOURCE_FILE_ID",
+            "SCRIBEFLOW_KEYWORDS_JSON", "SCRIBEFLOW_PROMPT",
+        ])
+        self.assertEqual(env[1]["value"], '["대인접수", "하나손해보험"]')
+        self.assertEqual(env[2]["value"], "보험회사와 통화한 녹음")
+
+    def test_invalid_transcription_hints_do_not_start_a_job(self):
+        invalid = [
+            ([""] , ""),
+            (["a"] * 21, ""),
+            (["a\nb"], ""),
+            ([123], ""),
+            ([], "a" * 501),
+        ]
+        for keywords, prompt in invalid:
+            with self.subTest(keywords=keywords, prompt=prompt):
+                with self.assertRaises(ValueError):
+                    self.api.start(
+                        "testfile_" + "a" * 22,
+                        keywords=keywords, prompt=prompt,
+                    )
+        self.session.request.assert_not_called()
+
     def test_status_does_not_allow_arbitrary_cloud_resources(self):
         with self.assertRaises(ValueError):
             self.api.status("projects/another/locations/asia-northeast3/operations/123")

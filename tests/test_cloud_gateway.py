@@ -44,6 +44,20 @@ class CloudGatewayTests(unittest.TestCase):
         self.assertEqual({tool.name for tool in asyncio.run(server.list_tools())},
                          {"transcribe_audio", "get_transcription_status"})
 
+    def test_transcribe_tool_exposes_optional_context_fields(self):
+        tools = {
+            tool.name: tool for tool in asyncio.run(self.server().list_tools())
+        }
+        schema = tools["transcribe_audio"].parameters
+        self.assertIn("file_id", schema["properties"])
+        self.assertIn("keywords", schema["properties"])
+        self.assertIn("prompt", schema["properties"])
+        self.assertIn("retry", schema["properties"])
+        self.assertIn("file_id", schema.get("required", []))
+        self.assertNotIn("keywords", schema.get("required", []))
+        self.assertNotIn("prompt", schema.get("required", []))
+        self.assertNotIn("retry", schema.get("required", []))
+
     def test_owner_verified_google_email_required(self):
         owner = "owner@example.com"
         claims = {"email": owner, "email_verified": True, "sub": "google-123"}
