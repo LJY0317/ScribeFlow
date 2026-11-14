@@ -110,7 +110,7 @@ ChatGPT의 접근 허용(Allow Access)을 승인하고 **4단계의 Google 계�
 
 **Google Drive 파일 ID 검색:** Cloud Run Worker는 비공개 rclone 설정의 현재 OAuth 액세스 토큰을 이용해 Drive API에서 파일과 상위 폴더의 메타데이터만 읽어 빠르게 경로를 구합니다. rclone이 최종 파일 ID까지 확인한 경우에만 해당 경로를 사용합니다. 공유받은 폴더·폴더 범위 제한·인증 형태 때문에 조회가 불가능하면 기존의 재귀 검색으로 되돌아갑니다. Google Drive 녹음 자체를 사전 다운로드하거나 인증 비밀을 출력하지 않습니다. 지원 확장자는 `.flac`, `.mp3`, `.mp4`, `.mpeg`, `.mpga`, `.m4a`, `.ogg`, `.wav`, `.webm`이며 나머지는 자동 손실 변환하지 않습니다.
 
-**중복 실행 잠금:** 기존 `scribeflow-oauth` Firestore 데이터베이스의 별도 `scribeflow_job_claims` 컬렉션에 원본 Drive 파일 ID의 SHA-256 해시, 시작 시각, Cloud Run 작업 ID만 저장합니다. 녹음·전사문·키워드·인증 비밀은 저장하지 않습니다. 별도의 Firestore 리소스를 만들지 않지만, 소량의 읽기·쓰기·저장 요금이 발생할 수 있습니다. 새로 만든 예약에는 30일 후 만료 시각(`expires_at`)이 저장됩니다. **Firestore의 자동 삭제는 TTL 정책을 별도로 활성화해야 실제 적용됩니다.** 정책 활성화 전에는 예약 기록이 삭제되지 않습니다.
+**중복 실행 잠금:** 기존 `scribeflow-oauth` Firestore 데이터베이스의 별도 `scribeflow_job_claims` 컬렉션에 원본 Drive 파일 ID의 SHA-256 해시, 시작 시각, Cloud Run 작업 ID만 저장합니다. 녹음·전사문·키워드·인증 비밀은 저장하지 않습니다. 별도의 Firestore 리소스를 만들지 않지만, 소량의 읽기·쓰기·저장 요금이 발생할 수 있습니다. 새로 만든 예약에는 7일 후 만료 시각(`expires_at`)이 저장됩니다. **Firestore의 자동 삭제는 TTL 정책을 별도로 활성화해야 실제 적용됩니다.** 정책 활성화 전에는 예약 기록이 삭제되지 않습니다.
 
 **선택적 보관 정책 설정(관리자용):** ScribeFlow를 업데이트한 뒤 Cloud Shell에서 `GCP_PROJECT` 환경변수를 설정하고 아래 명령을 한 번 실행하면, **ScribeFlow 작업 예약 메타데이터만** 만료 후 자동 정리됩니다. 기존 OAuth 토큰, 녹음·TXT, Cloud Run Job은 대상이 아닙니다. Firestore TTL은 즉시 삭제를 보장하지 않으며 삭제 작업에 소액 요금이 발생할 수 있습니다.
 
@@ -118,7 +118,7 @@ ChatGPT의 접근 허용(Allow Access)을 승인하고 **4단계의 Google 계�
 bash scripts/configure-claim-ttl.sh
 ```
 
-TTL이 적용되어 30일 지난 예약이 사라지면 동일 파일 ID의 새 요청도 Cloud Run 작업 하나를 생성할 수 있습니다. 다만 기존 TXT는 덮어쓰지 않으며 전사 전 해당 파일의 존재 여부를 다시 확인합니다. Cloud Run 실행 자체에 비용이 발생할 수 있습니다. 이전 작업의 상태 조회가 불가능할 때에는 최소 2시간 후 사용자가 `retry=True`를 명시해야 재시도합니다.
+TTL이 적용되어 7일 지난 예약이 사라지면 동일 파일 ID의 새 요청도 Cloud Run 작업 하나를 생성할 수 있습니다. 다만 기존 TXT는 덮어쓰지 않으며 전사 전 해당 파일의 존재 여부를 다시 확인합니다. Cloud Run 실행 자체에 비용이 발생할 수 있습니다. 이전 작업의 상태 조회가 불가능할 때에는 최소 2시간 후 사용자가 `retry=True`를 명시해야 재시도합니다.
 
 ID는 `https://drive.google.com/file/d/FILE_ID/view`에서 확인합니다. **ScribeFlow MCP 자체는 Google Drive 파일명 검색 도구가 없으므로** ChatGPT가 “SSAFY 폴더의 녹음”만으로 찾으려면 별도 Google Drive 연결이나 파일 링크가 필요합니다. 이미 동명 TXT가 있으면 SHA-256 일치 시 `skipped_existing`, 미확인·불일치 시에도 덮어쓰지 않습니다.
 
@@ -143,6 +143,32 @@ bash scripts/deploy-worker-only.sh
 Cloud Build와 Cloud Run Job 업데이트에 비용이 발생할 수 있지만, 명령 자체는 새로운 전사를 실행하지 않습니다. 되돌릴 때는 이전 정상 이미지로 `gcloud run jobs update scribeflow-transcribe --image=PREVIOUS_IMAGE --project="$GCP_PROJECT" --region=asia-northeast3`를 실행할 수 있습니다.
 
 **주의:** 원격 전문용어 힌트와 중복 실행 방지처럼 MCP Gateway의 도구 정의도 바뀐 릴리스는 이 스크립트만으로 적용할 수 없습니다. 처음 적용할 때는 위의 `scripts/deploy-cloud-run.sh`와 `scripts/enable-mcp-access.sh` 전체 절차가 필요합니다.
+
+### 전사 산출물·Cloud 비용 점검
+
+- **사용자 Google Drive:** 최종 산출물은 원본 음성과 같은 폴더의 TXT **한 개**입니다. Cloud Run 작업용 원본 복사본, 무재인코딩 오디오 조각, 구간별 TXT 및 manifest는 정상 완료 후 삭제 시도하고 Cloud Run Job이 종료되면 임시 파일시스템도 사라집니다. 전사 결과가 모두 비어 있으면 TXT를 생성하지 않고 실패 상태로 알립니다.
+- **작업 예약 Firestore:** 실제 오디오는 저장하지 않습니다. 파일 ID 해시·Cloud Run 작업 ID·시각 정도의 메타데이터만 남기며, 7일 만료 필드는 TTL 기능을 실제 활성화해야 삭제됩니다. 동일 파일에 대한 중복 과금 방지와 메타데이터 최소 보관 사이의 절충입니다.
+- **Docker 이미지:** Cloud Build로 배포할 때 Artifact Registry에 이전 버전이 축적될 수 있습니다. 현재 실행 중인 Cloud Run Job과 MCP Gateway의 이미지 및 되돌리기에 필요한 이미지는 보존해야 합니다.
+- **Cloud Logging:** Google Cloud의 기본 `_Default` 로그 버킷 보관기간은 통상 30일입니다. `_Required` 버킷은 400일이며 임의로 단축할 수 없습니다. 로그에는 녹음 원문이나 API 키를 출력하지 않도록 설계했지만, 오류 유형과 작업 메타데이터는 남을 수 있습니다. 기존 보관 정책을 확인하지 않고 변경하지 마세요.
+
+**읽기 전용 점검(아직 아무것도 정리하지 않음):**
+
+```bash
+export GCP_PROJECT='YOUR_EXISTING_PROJECT_ID'
+bash scripts/audit-cloud-storage.sh
+```
+
+점검 결과에는 클라우드 프로젝트와 리소스 구성 정보가 포함될 수 있으므로 공개 채팅이나 공개 저장소에 원본 출력을 그대로 올리지 마세요. 이 스크립트는 활성 Job·서비스 이미지, Registry 이미지 목록, 기존 정리 정책, 로그 버킷 보관기간만 조회하며 삭제·설정 변경은 하지 않습니다.
+
+**이미지 정리 정책은 관리자 선택사항:** `scripts/artifact-cleanup-policy.json`은 90일 지난 *태그 없는* 이미지를 대상으로 하되 이미지 패키지마다 최근 5개를 유지하는 보수적 예시입니다. 이 예시도 오래 실행 중인 이미지나 필요한 이전 버전을 삭제할 위험이 있으므로 **자동 적용되지 않습니다.** 먼저 실행 중인 두 Cloud Run 리소스의 정확한 이미지 다이제스트와 롤백 이미지를 대조하세요. 테스트만 설정하려면 아래 명령을 수동으로 실행할 수 있으나, `--dry-run`도 Registry에 테스트 정책을 **저장**한다는 점에 유의하세요. 이 명령은 실제 이미지를 삭제하지 않습니다.
+
+```bash
+gcloud artifacts repositories set-cleanup-policies scribeflow \
+  --project="$GCP_PROJECT" --location=asia-northeast3 \
+  --policy=scripts/artifact-cleanup-policy.json --dry-run
+```
+
+정책을 실제 적용해 자동 삭제하도록 전환하는 작업은 이번 개발 범위에 포함되지 않습니다. 기존 Registry 정책이 있는지 먼저 확인하고, 최소 1일 이상 dry-run 감사 로그를 확인한 뒤 결정하세요. Google 공식 [Artifact Registry 정책 안내](https://docs.cloud.google.com/artifact-registry/docs/repositories/cleanup-policy)와 [Cloud Logging 보관 정책](https://docs.cloud.google.com/logging/quotas)을 참고하세요.
 
 | 현상 | 확인할 설정 |
 | --- | --- |
