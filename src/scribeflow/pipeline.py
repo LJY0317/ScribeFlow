@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .cache import clean_cache, job_lock
+from .cache import clean_cache, job_lock, retain_failed_cache
 from .drive_lookup import candidate_from_id
 from .engine import (
     MODEL,
@@ -417,6 +417,7 @@ def transcribe(
 ) -> dict:
     """Create exactly one adjacent .txt file; preserve failed jobs for retry."""
     paths = paths_for(source, output)
+    keep_failed = retain_failed_cache()  # Validate the policy before any paid call.
     cache = cache_root()
     cache.mkdir(parents=True, exist_ok=True, mode=0o700)
     clean_cache(cache)
@@ -430,12 +431,14 @@ def transcribe(
         return _transcribe_locked(
             paths, cache, language=language, keywords=keywords, prompt=prompt,
             chunk_seconds=chunk_seconds, overlap_seconds=overlap_seconds,
+            keep_failed=keep_failed,
         )
 
 
 def _transcribe_locked(
     paths: Paths, cache: Path, *, language: str, keywords: tuple[str, ...],
     prompt: str, chunk_seconds: int | None, overlap_seconds: int,
+    keep_failed: bool,
 ) -> dict:
     """Destination lock already held; skip existing outputs before transfer."""
     if remote_exists(paths.transcript) if paths.remote else Path(paths.transcript).exists():
@@ -483,17 +486,38 @@ def _transcribe_locked(
                     overlap_seconds=overlap_seconds, language=language,
                     keywords=keywords, prompt=prompt,
                 )
+                recognized = plain_transcript(job_dir)
+                if not recognized.strip():
+                    raise ValueError(
+                        "음성에서 인식된 발언이 없습니다. "
+                        "비어 있는 TXT는 생성하지 않았습니다."
+                    )
                 contents = stamp_transcript(
-                    plain_transcript(job_dir), settings["source_sha256"]
+                    recognized, settings["source_sha256"]
                 )
                 if paths.remote:
                     _publish_remote(contents, paths.transcript, job_dir)
                 else:
                     _publish_local(contents, Path(paths.transcript))
+            except BaseException:
+                if not keep_failed and job_dir.is_dir():
+                    try:
+                        shutil.rmtree(job_dir)
+                    except OSError as exc:
+                        print(
+                            f"주의: 실패한 작업의 임시 캐시를 정리하지 못했습니다: {exc}",
+                            file=sys.stderr,
+                        )
+                raise
             finally:
                 if job_dir.exists():
                     os.utime(job_dir, None)
-            # Keep failed jobs for retry, but drop all intermediates on success.
+            # Mark the published job first so a future cleanup can immediately
+            # reap its cache even if today's deletion hits a transient error.
+            try:
+                (job_dir / ".published").touch(exist_ok=True)
+            except OSError:
+                pass
             try:
                 shutil.rmtree(job_dir)
             except OSError as exc:
