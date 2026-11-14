@@ -126,6 +126,22 @@ ID는 `https://drive.google.com/file/d/FILE_ID/view`에서 확인합니다. **Sc
 
 **업데이트:** `git pull --ff-only`로 갱신한 뒤 **5단계의 두 배포 스크립트**를 재실행합니다. 기존 Google OAuth 클라이언트·OpenAI 키·Drive 인증을 재사용합니다. 새 Cloud Shell 세션에서는 `export` 환경변수를 다시 설정해야 하지만 Secret Manager의 비밀값은 유지됩니다.
 
+### 전사 엔진만 안전하게 재배포하기
+
+MCP 도구 정의나 OAuth Gateway가 바뀌지 않은 **전사 엔진 변경만** 적용할 때는 기존 Gateway·OAuth·IAM·Secret Manager를 건드리지 않고 Cloud Run Job 이미지만 갱신할 수 있습니다. 이 스크립트는 검토된 코드가 `main`에 병합되어 있고 로컬 체크아웃이 깨끗한 `main` 브랜치일 때만 실행됩니다.
+
+```bash
+cd ~/ScribeFlow
+git switch main
+git pull --ff-only
+export GCP_PROJECT='YOUR_EXISTING_PROJECT_ID'
+bash scripts/deploy-worker-only.sh
+```
+
+Cloud Build와 Cloud Run Job 업데이트에 비용이 발생할 수 있지만, 명령 자체는 새로운 전사를 실행하지 않습니다. 되돌릴 때는 이전 정상 이미지로 `gcloud run jobs update scribeflow-transcribe --image=PREVIOUS_IMAGE --project="$GCP_PROJECT" --region=asia-northeast3`를 실행할 수 있습니다.
+
+**주의:** 원격 전문용어 힌트와 중복 실행 방지처럼 MCP Gateway의 도구 정의도 바뀐 릴리스는 이 스크립트만으로 적용할 수 없습니다. 처음 적용할 때는 위의 `scripts/deploy-cloud-run.sh`와 `scripts/enable-mcp-access.sh` 전체 절차가 필요합니다.
+
 | 현상 | 확인할 설정 |
 | --- | --- |
 | `redirect_uri_mismatch` | Google Cloud OAuth 웹 클라이언트의 **승인된 리디렉션 URI**가 `.../auth/callback`인지 |
