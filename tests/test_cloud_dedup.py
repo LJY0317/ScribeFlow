@@ -154,8 +154,47 @@ class DeduplicationTests(unittest.TestCase):
         self.jobs.start(FILE_ID)
         self.backend.status.side_effect = RuntimeError("cloud API offline")
         repeated = self.jobs.start(FILE_ID)
-        self.assertEqual(repeated["status"], "already_submitted")
+        self.assertEqual(repeated["status"], "operation_unavailable")
+        self.assertTrue(repeated["retry_requires_confirmation"])
         self.backend.start.assert_called_once()
+
+    def test_expired_operation_must_be_explicitly_retried(self):
+        self.jobs.start(FILE_ID)
+        self.backend.status.side_effect = RuntimeError("operation no longer available")
+        self.now += UNKNOWN_SUBMISSION_RETRY_SECONDS + 10
+        old = self.jobs.start(FILE_ID)
+        self.assertEqual(old["status"], "operation_unavailable")
+        self.backend.start.assert_called_once()
+        self.backend.status.reset_mock(side_effect=True)
+        self.backend.status.side_effect = RuntimeError("expired")
+        self.assertEqual(
+            self.jobs.start(FILE_ID, retry=True)["status"], "submitted",
+        )
+        self.assertEqual(self.backend.start.call_count, 2)
+
+    def test_claim_expiration_is_thirty_days_and_extended_on_retry(self):
+        from datetime import datetime, timezone
+
+        first = self.jobs.start(FILE_ID)
+        self.assertEqual(first["status"], "submitted")
+        key = next(iter(self.claims.documents))
+        record = self.claims.read(key)
+        expiry = datetime.fromisoformat(
+            record["fields"]["expires_at"]["timestampValue"].replace("Z", "+00:00")
+        )
+        self.assertEqual(
+            (expiry - datetime.fromtimestamp(self.now, tz=timezone.utc)).days, 30,
+        )
+        self.backend.status.return_value = {
+            "status": "failed", "operation": OPERATION,
+        }
+        self.now += 100
+        self.jobs.start(FILE_ID, retry=True)
+        updated = self.claims.read(key)
+        self.assertNotEqual(
+            record["fields"]["expires_at"],
+            updated["fields"]["expires_at"],
+        )
 
     def test_claim_store_outage_fails_closed_before_billable_request(self):
         self.claims.create = Mock(side_effect=RuntimeError("Firestore unavailable"))
@@ -252,6 +291,9 @@ class FirestoreRestClaimsTests(unittest.TestCase):
         self.assertEqual(
             kwargs["json"]["fields"]["operation"]["stringValue"], OPERATION,
         )
+        self.assertIn("expires_at", kwargs["json"]["fields"])
+        self.assertIn("timestampValue", kwargs["json"]["fields"]["expires_at"])
+
 
 
 if __name__ == "__main__":
