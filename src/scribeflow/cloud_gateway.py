@@ -86,6 +86,8 @@ def create_server():
             "Transcribe one Google Drive audio by file ID; incurs OpenAI API charges. "
             "Optional keywords are literal names or terms that may be spoken; "
             "prompt is brief factual context, never invented dialogue. "
+            "language defaults to automatic detection ('auto'); use 'ko', 'en', "
+            "or another supported code to hint a known language. "
             "Existing transcripts are not overwritten. Repeated requests for "
             "the same file reuse the existing job. Explicit retry=True "
             "is required to repeat a completed/failed job or stale submission; "
@@ -95,12 +97,12 @@ def create_server():
     )
     def transcribe_audio(
         file_id: str, keywords: list[str] | None = None, prompt: str = "",
-        retry: bool = False,
+        retry: bool = False, language: str = "auto",
     ) -> dict:
         _require_owner(owner_email)
         return backend.start(
             file_id, keywords=keywords, prompt=prompt,
-            retry=retry,
+            retry=retry, language=language,
         )
 
     @server.tool(

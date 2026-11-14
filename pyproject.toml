@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "scribeflow"
 version = "0.1.0"
-description = "Resumable long-form Korean audio transcription with the OpenAI API"
+description = "Resumable long-form multilingual audio transcription with the OpenAI API"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

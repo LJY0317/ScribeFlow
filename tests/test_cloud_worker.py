@@ -80,7 +80,25 @@ class CloudWorkerTests(unittest.TestCase):
                         "audio_" + "a" * 25,
                         keywords=("대인접수", "하나손해보험"),
                         prompt="보험회사 상담 녹음",
+                        language="auto",
                     )
+
+    def test_auto_language_reaches_transcription(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config-secret"
+            config.write_text("[gdrive]\ntype = drive\n", encoding="utf-8")
+            with patch.dict(os.environ, {
+                "SCRIBEFLOW_SOURCE_FILE_ID": "audio_" + "a" * 25,
+                "OPENAI_API_KEY": "fake",
+                "SCRIBEFLOW_RCLONE_CONFIG_SECRET": str(config),
+                "SCRIBEFLOW_LANGUAGE": "auto",
+                "SCRIBEFLOW_KEYWORDS_JSON": "[]",
+                "SCRIBEFLOW_PROMPT": "",
+            }):
+                with patch("scribeflow.cloud_worker.transcribe",
+                           return_value={"ok": True}) as transcribe:
+                    run_job()
+                    transcribe.assert_called_once_with("audio_" + "a" * 25)
 
     def test_invalid_context_stops_before_transcription(self):
         with patch.dict(os.environ, {

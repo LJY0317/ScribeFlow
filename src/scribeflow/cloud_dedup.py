@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .cloud_run import _FILE_ID, CloudRunJobs, normalize_transcription_context
+from .cloud_run import _FILE_ID, CloudRunJobs, normalize_language, normalize_transcription_context
 
 COLLECTION = "scribeflow_job_claims"
 # A Cloud Run task times out after 1 hour; an unknown submission must not be
@@ -125,11 +125,11 @@ class DeduplicatingCloudRunJobs:
 
     def _submit(
         self, key: str, claim: dict, file_id: str,
-        keywords: tuple[str, ...], prompt: str,
+        keywords: tuple[str, ...], prompt: str, language: str,
     ) -> dict:
         # If Cloud Run accepted this request but its response was lost, the
         # claim stays pending. This is intentionally not auto-retried.
-        result = self.backend.start(file_id, keywords=keywords, prompt=prompt)
+        result = self.backend.start(file_id, keywords=keywords, prompt=prompt, language=language)
         try:
             self.claims.publish(key, claim, result["operation"])
         except Exception:
@@ -144,11 +144,12 @@ class DeduplicatingCloudRunJobs:
 
     def start(
         self, file_id: str, keywords: list[str] | tuple[str, ...] | None = None,
-        prompt: str = "", retry: bool = False,
+        prompt: str = "", retry: bool = False, language: str = "auto",
     ) -> dict:
         if not isinstance(file_id, str) or not _FILE_ID.fullmatch(file_id):
             raise ValueError("A valid Google Drive file ID is required")
         normalized, prompt = normalize_transcription_context(keywords, prompt)
+        language = normalize_language(language)
         if not isinstance(retry, bool):
             raise ValueError("retry must be a boolean")
 
@@ -157,7 +158,7 @@ class DeduplicatingCloudRunJobs:
             now = int(self.clock())
             claim = self.claims.create(key, now)
             if claim is not None:
-                return self._submit(key, claim, file_id, normalized, prompt)
+                return self._submit(key, claim, file_id, normalized, prompt, language)
 
             existing = self.claims.read(key)
             if existing is None:
@@ -181,7 +182,7 @@ class DeduplicatingCloudRunJobs:
                         claim = self.claims.reset(key, existing, now)
                         if claim is not None:
                             return self._submit(
-                                key, claim, file_id, normalized, prompt
+                                key, claim, file_id, normalized, prompt, language
                             )
                         continue
                     return {
@@ -194,7 +195,7 @@ class DeduplicatingCloudRunJobs:
                 if state in ("failed", "completed") and retry:
                     claim = self.claims.reset(key, existing, now)
                     if claim is not None:
-                        return self._submit(key, claim, file_id, normalized, prompt)
+                        return self._submit(key, claim, file_id, normalized, prompt, language)
                     continue
                 return {
                     "status": (
@@ -215,7 +216,7 @@ class DeduplicatingCloudRunJobs:
             if retry and age >= UNKNOWN_SUBMISSION_RETRY_SECONDS:
                 claim = self.claims.reset(key, existing, now)
                 if claim is not None:
-                    return self._submit(key, claim, file_id, normalized, prompt)
+                    return self._submit(key, claim, file_id, normalized, prompt, language)
                 continue
             return {
                 "status": (

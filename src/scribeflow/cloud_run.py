@@ -11,6 +11,16 @@ from typing import Any
 _FILE_ID = re.compile(r"[A-Za-z0-9_-]{20,}")
 _GOOGLE_ID = re.compile(r"[a-z][a-z0-9-]{2,62}")
 _REGION = re.compile(r"[a-z]+-[a-z]+[0-9]+")
+_LANGUAGE = re.compile(r"(?:[a-z]{2,3}|zh-(?:cn|tw|hk))")
+
+
+def normalize_language(language: str) -> str:
+    """Use 'auto' to omit language hints; allow an explicit input language."""
+    if not isinstance(language, str) or not (
+        language == "auto" or _LANGUAGE.fullmatch(language)
+    ):
+        raise ValueError("language must be 'auto' or a lowercase ISO language code")
+    return language
 
 
 def normalize_transcription_context(
@@ -81,12 +91,13 @@ class CloudRunJobs:
 
     def start(
         self, file_id: str, keywords: list[str] | tuple[str, ...] | None = None,
-        prompt: str = "",
+        prompt: str = "", language: str = "auto",
     ) -> dict:
         """Queue one job with optional vocabulary/context; no audio in gateway."""
         if not _FILE_ID.fullmatch(file_id):
             raise ValueError("A valid Google Drive file ID is required")
         terms, context = normalize_transcription_context(keywords, prompt)
+        language = normalize_language(language)
         variables = [{"name": "SCRIBEFLOW_SOURCE_FILE_ID", "value": file_id}]
         if terms:
             variables.append({
@@ -95,6 +106,8 @@ class CloudRunJobs:
             })
         if context:
             variables.append({"name": "SCRIBEFLOW_PROMPT", "value": context})
+        if language != "auto":
+            variables.append({"name": "SCRIBEFLOW_LANGUAGE", "value": language})
         operation = self._call("POST", self.target.resource + ":run", payload={
             "overrides": {
                 "containerOverrides": [{

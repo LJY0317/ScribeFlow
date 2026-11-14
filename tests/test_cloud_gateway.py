@@ -53,10 +53,12 @@ class CloudGatewayTests(unittest.TestCase):
         self.assertIn("keywords", schema["properties"])
         self.assertIn("prompt", schema["properties"])
         self.assertIn("retry", schema["properties"])
+        self.assertIn("language", schema["properties"])
         self.assertIn("file_id", schema.get("required", []))
         self.assertNotIn("keywords", schema.get("required", []))
         self.assertNotIn("prompt", schema.get("required", []))
         self.assertNotIn("retry", schema.get("required", []))
+        self.assertNotIn("language", schema.get("required", []))
 
     def test_owner_verified_google_email_required(self):
         owner = "owner@example.com"

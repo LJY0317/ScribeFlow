@@ -413,7 +413,7 @@ def transcribe(
     source: str,
     output: str | None = None,
     *,
-    language: str = "ko",
+    language: str = "auto",
     keywords: tuple[str, ...] = (),
     prompt: str = "",
     chunk_seconds: int | None = None,
