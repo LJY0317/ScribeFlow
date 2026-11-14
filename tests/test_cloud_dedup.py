@@ -105,6 +105,20 @@ class DeduplicationTests(unittest.TestCase):
         self.assertEqual(self.jobs.start(FILE_ID)["status"], "already_completed")
         self.backend.start.assert_called_once()
 
+    def test_completed_job_requires_explicit_retry(self):
+        self.jobs.start(FILE_ID)
+        self.backend.status.return_value = {
+            "status": "completed", "operation": OPERATION,
+        }
+        self.assertEqual(
+            self.jobs.start(FILE_ID)["status"], "already_completed",
+        )
+        self.backend.start.assert_called_once()
+        self.assertEqual(
+            self.jobs.start(FILE_ID, retry=True)["status"], "submitted",
+        )
+        self.assertEqual(self.backend.start.call_count, 2)
+
     def test_explicit_retry_after_failure_replaces_claim(self):
         self.jobs.start(FILE_ID)
         self.backend.status.return_value = {
