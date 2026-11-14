@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# New commits supersede older CI runs on the same pull request.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   unittest:
     runs-on: ubuntu-latest
