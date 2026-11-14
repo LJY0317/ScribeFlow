@@ -164,6 +164,10 @@ class DeduplicatingCloudRunJobs:
             if existing is None:
                 continue  # raced a removal; attempt the atomic create again
 
+            try:
+                age = now - int(existing["fields"]["started_at"]["integerValue"])
+            except (KeyError, TypeError, ValueError):
+                age = 0  # invalid data fails closed
             operation = _recorded_operation(existing)
             if operation:
                 try:
@@ -172,12 +176,6 @@ class DeduplicatingCloudRunJobs:
                     # An operation may eventually expire from the Cloud Run API.
                     # A deliberate retry after the safety window is possible,
                     # but never automatically triggered.
-                    try:
-                        age = now - int(
-                            existing["fields"]["started_at"]["integerValue"]
-                        )
-                    except (KeyError, TypeError, ValueError):
-                        age = 0
                     if retry and age >= UNKNOWN_SUBMISSION_RETRY_SECONDS:
                         claim = self.claims.reset(key, existing, now)
                         if claim is not None:
@@ -209,10 +207,6 @@ class DeduplicatingCloudRunJobs:
 
             # A previous request may have launched a job but lost the response
             # before publishing the operation. Never auto-release this claim.
-            try:
-                age = now - int(existing["fields"]["started_at"]["integerValue"])
-            except (KeyError, TypeError, ValueError):
-                age = 0  # invalid data fails closed
             if retry and age >= UNKNOWN_SUBMISSION_RETRY_SECONDS:
                 claim = self.claims.reset(key, existing, now)
                 if claim is not None:
