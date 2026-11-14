@@ -183,6 +183,34 @@ class LosslessAudioTests(unittest.TestCase):
                 self.assertEqual(actual_packets, original_packets)
                 self.assertEqual(source.read_bytes(), original_bytes)
 
+    def test_interrupted_preflight_staging_is_resumable(self):
+        """A failure after manifest creation must not force a paid restart."""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = self.make_audio(root, ".mp3")
+            original = source.read_bytes()
+            output = root / "output"
+            captured = []
+            client = self.fake_client(captured)
+            with patch("scribeflow.engine.MAX_UPLOAD_BYTES", 80_000):
+                with patch("scribeflow.engine.CHUNK_TARGET_BYTES", 70_000):
+                    with patch("scribeflow.engine.get_api_key", return_value="test"):
+                        with patch("openai.OpenAI", return_value=client):
+                            with patch(
+                                "scribeflow.engine.shutil.copyfile",
+                                side_effect=OSError("simulated interrupted copy"),
+                            ):
+                                with self.assertRaisesRegex(OSError, "interrupted"):
+                                    transcribe_file(source, output)
+                            self.assertTrue((output / "manifest.json").is_file())
+                            self.assertEqual(captured, [])
+                            transcribe_file(source, output)
+            self.assertGreater(len(captured), 1)
+            self.assertEqual(source.read_bytes(), original)
+            self.assertTrue(all(
+                0 < len(payload) <= 70_000 for _, payload in captured
+            ))
+
     def test_unsupported_audio_is_not_lossily_converted(self):
         with tempfile.TemporaryDirectory() as folder:
             source = Path(folder) / "recording.wma"
