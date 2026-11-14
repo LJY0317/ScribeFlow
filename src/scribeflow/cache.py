@@ -70,7 +70,10 @@ def clean_cache(root: Path) -> dict:
     removed = 0
     for last_used, path, size in sorted(candidates):
         age = now - last_used
-        if age < MAX_AGE_SECONDS and (
+        published = (path / ".published").is_file()
+        # A final TXT already exists for published jobs. Never keep their
+        # intermediate chunks solely because a previous cleanup failed.
+        if not published and age < MAX_AGE_SECONDS and (
             total <= MAX_TOTAL_BYTES or age < MIN_IDLE_SECONDS_FOR_SIZE_CLEANUP
         ):
             continue
