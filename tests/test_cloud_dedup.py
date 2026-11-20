@@ -89,7 +89,7 @@ class DeduplicationTests(unittest.TestCase):
             "duplicate": True,
         })
         self.backend.start.assert_called_once_with(
-            FILE_ID, keywords=(), prompt="", language="auto",
+            FILE_ID, keywords=(), prompt="", language="auto", replace_existing=False,
         )
         self.assertEqual(len(self.claims.documents), 1)
         self.assertEqual(

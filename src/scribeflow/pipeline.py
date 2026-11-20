@@ -22,16 +22,16 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .cache import clean_cache, job_lock, retain_failed_cache
-from .drive_lookup import candidate_from_id
+from .drive_lookup import candidate_from_id, existing_access_token, update_transcript
 from .engine import (
-    MODEL,
     SUPPORTED_AUDIO_SUFFIXES,
     clock,
+    configured_model,
     hash_file,
     transcribe_file,
 )
 from .formatting import format_paragraphs
-from .provenance import TranscriptMetadata, source_fingerprint, stamp_transcript
+from .provenance import TranscriptMetadata, source_fingerprint, stamp_transcript, transcript_model
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,13 @@ class Paths:
     source: str
     transcript: str
     remote: bool
+
+
+@dataclass(frozen=True)
+class Replacement:
+    source_sha256: str
+    transcript_sha256: str
+    drive_id: str | None = None
 
 
 def is_remote(value: str) -> bool:
@@ -229,11 +236,12 @@ def run_rclone(*args: str) -> subprocess.CompletedProcess:
             "Google Drive 파일 처리를 위해 rclone이 필요합니다. "
             "rclone config에서 Google Drive 연결을 설정하세요."
         )
+    tail_options = {"encoding": "utf-8", "errors": "replace"} if "--tail" in args else {}
     return subprocess.run(
         ["rclone", *args] + (
             ["--drive-root-folder-id", root_folder_id] if root_folder_id else []
         ),
-        check=True, capture_output=True, text=True,
+        check=True, capture_output=True, text=True, **tail_options,
     )
 
 
@@ -244,6 +252,49 @@ def remote_exists(destination: str) -> bool:
     )
     listed = run_rclone("lsf", parent, "--files-only", "--max-depth", "1").stdout
     return name in listed.splitlines()
+
+
+def _replacement(paths: Paths, requested_id: str | None = None) -> Replacement | None:
+    if not paths.remote:
+        target = Path(paths.transcript)
+        if not target.is_file():
+            return None
+        return Replacement(hash_file(Path(paths.source)), hash_file(target))
+
+    parent, _, source_name = paths.source.rpartition("/")
+    if not parent:
+        remote, source_name = paths.source.split(":", 1)
+        parent = remote + ":"
+    target_name = paths.transcript.removeprefix(parent).lstrip("/")
+    entries = json.loads(run_rclone("lsjson", parent, "--files-only", "--hash").stdout)
+    sources = [entry for entry in entries if entry.get("Name") == source_name]
+    targets = [entry for entry in entries if entry.get("Name") == target_name]
+    if not targets:
+        return None
+    if len(sources) != 1 or len(targets) != 1:
+        raise ValueError("Drive에 이름이 같은 원본 또는 TXT가 여러 개 있습니다.")
+    source, target = sources[0], targets[0]
+    if requested_id and source.get("ID") != requested_id:
+        raise ValueError("선택한 Drive 원본 파일 ID가 경로의 파일과 다릅니다.")
+    target_id = target.get("ID", "")
+    source_sha = source.get("Hashes", {}).get("sha256") or ""
+    target_sha = target.get("Hashes", {}).get("sha256") or ""
+    if not all(re.fullmatch(r"[0-9a-f]{64}", sha) for sha in (source_sha, target_sha)):
+        raise ValueError("Drive 원본 또는 TXT의 SHA-256을 확인할 수 없습니다.")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{10,}", target_id):
+        raise ValueError("Drive TXT의 파일 ID를 확인할 수 없습니다.")
+    return Replacement(source_sha, target_sha, target_id)
+
+
+def _replacement_token() -> str:
+    config_path = os.environ.get("RCLONE_CONFIG")
+    if not config_path:
+        line = run_rclone("config", "paths").stdout.splitlines()[0]
+        _, _, config_path = line.partition(": ")
+    token = existing_access_token(config_path)
+    if not token:
+        raise ValueError("Drive TXT 갱신에는 rclone의 활성 Google OAuth 연결이 필요합니다.")
+    return token
 
 
 def remote_audio_sha256(source: str) -> str | None:
@@ -292,7 +343,9 @@ def remote_result_url(destination: str) -> str | None:
 # Use the same supported extensions in Drive discovery and the transcription engine.
 
 
-def scan_drive(folder: str, recursive: bool = False, limit: int = 50) -> dict:
+def scan_drive(
+    folder: str, recursive: bool = False, limit: int = 50, *, include_models: bool = False,
+) -> dict:
     """Separate verified transcripts, unverified pairs, and missing ones."""
     folder = folder.rstrip("/") or folder
     if folder != "gdrive:":
@@ -301,7 +354,11 @@ def scan_drive(folder: str, recursive: bool = False, limit: int = 50) -> dict:
     entries = json.loads(
         run_rclone("lsjson", folder, *options, "--files-only", "--hash").stdout
     )
-    names = {e["Path"].casefold() for e in entries if e.get("Path") and not e.get("IsDir")}
+    transcripts = {}
+    for entry in entries:
+        path = entry.get("Path", "")
+        if not entry.get("IsDir") and path.lower().endswith(".txt"):
+            transcripts.setdefault(path.casefold(), []).append(entry)
     sources = sorted(
         (e for e in entries if not e.get("IsDir") and
          posixpath.splitext(e.get("Path", ""))[1].lower()
@@ -310,6 +367,8 @@ def scan_drive(folder: str, recursive: bool = False, limit: int = 50) -> dict:
     )
     pending = []
     unverified = []
+    recorded = []
+    model_counts = {}
     already = 0
     unverified_total = 0
     missing_total = 0
@@ -318,10 +377,17 @@ def scan_drive(folder: str, recursive: bool = False, limit: int = 50) -> dict:
         stem = posixpath.splitext(relative)[0]
         prefix = folder.rstrip(":")
         remote_path = prefix + ":" + relative if folder == "gdrive:" else folder + "/" + relative
-        if (stem + ".txt").casefold() in names:
-            transcript_path = prefix + ":" + stem + ".txt" if folder == "gdrive:" else folder + "/" + stem + ".txt"
+        matches = transcripts.get((stem + ".txt").casefold(), [])
+        if matches:
             source_sha = item.get("Hashes", {}).get("sha256")
-            saved_sha = source_fingerprint(run_rclone("cat", transcript_path).stdout) if source_sha else None
+            transcript_path = None
+            contents = ""
+            if len(matches) == 1:
+                base = "gdrive:" if folder == "gdrive:" else folder + "/"
+                transcript_path = base + matches[0]["Path"]
+                if source_sha or include_models:
+                    contents = run_rclone("cat", transcript_path, "--tail", "4096").stdout
+            saved_sha = source_fingerprint(contents)
             state = (
                 "skipped_existing" if saved_sha and saved_sha == source_sha
                 else "source_mismatch" if saved_sha and source_sha
@@ -333,6 +399,17 @@ def scan_drive(folder: str, recursive: bool = False, limit: int = 50) -> dict:
                 unverified_total += 1
                 if len(unverified) < limit:
                     unverified.append({"source": remote_path, "status": state})
+            if include_models:
+                details = transcript_model(contents)
+                model_key = details["model_id"] if details else None
+                model_counts[model_key] = model_counts.get(model_key, 0) + 1
+                if len(recorded) < limit:
+                    recorded.append({
+                        "source": remote_path, "drive_file_id": item.get("ID"),
+                        "transcript": transcript_path,
+                        "transcript_drive_file_id": matches[0].get("ID") if len(matches) == 1 else None,
+                        "status": state, "model": details,
+                    })
             continue
         missing_total += 1
         if len(pending) < limit:
@@ -342,7 +419,7 @@ def scan_drive(folder: str, recursive: bool = False, limit: int = 50) -> dict:
                 "size_bytes": item.get("Size"),
                 "drive_file_id": item.get("ID"),
             })
-    return {
+    result = {
         "folder": folder,
         "total_audio": len(sources),
         "already_transcribed": already,
@@ -351,6 +428,12 @@ def scan_drive(folder: str, recursive: bool = False, limit: int = 50) -> dict:
         "untranscribed_count": missing_total,
         "untranscribed": pending,
     }
+    if include_models:
+        result["transcribed"] = recorded
+        result["model_counts"] = [
+            {"model_id": model_id, "count": count} for model_id, count in model_counts.items()
+        ]
+    return result
 
 
 def ensure_free_destination(paths: Paths) -> None:
@@ -363,8 +446,8 @@ def ensure_free_destination(paths: Paths) -> None:
         )
 
 
-def _publish_local(contents: str, destination: Path) -> None:
-    """Create atomically without ever overwriting a preexisting user file."""
+def _publish_local(contents: str, destination: Path, *, replace: bool = False) -> None:
+    """Publish atomically, replacing only when explicitly requested."""
     if not destination.parent.is_dir():
         raise FileNotFoundError(f"저장할 폴더가 없습니다: {destination.parent}")
     temporary = None
@@ -377,7 +460,11 @@ def _publish_local(contents: str, destination: Path) -> None:
             stream.write(contents)
             stream.flush()
             os.fsync(stream.fileno())
-        os.link(temporary, destination)  # Fails rather than replacing an existing file.
+        if replace:
+            temporary.chmod(destination.stat().st_mode & 0o777)
+            os.replace(temporary, destination)
+        else:
+            os.link(temporary, destination)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -428,9 +515,12 @@ def transcribe(
     prompt: str = "",
     chunk_seconds: int | None = None,
     overlap_seconds: int = 3,
+    replace_existing: bool = False,
 ) -> dict:
     """Create exactly one adjacent .txt file; preserve failed jobs for retry."""
+    requested_id = _drive_file_id(source) if replace_existing else None
     paths = paths_for(source, output)
+    model = configured_model()
     keep_failed = retain_failed_cache()  # Validate the policy before any paid call.
     cache = cache_root()
     cache.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -445,21 +535,39 @@ def transcribe(
         return _transcribe_locked(
             paths, cache, language=language, keywords=keywords, prompt=prompt,
             chunk_seconds=chunk_seconds, overlap_seconds=overlap_seconds,
-            keep_failed=keep_failed,
+            keep_failed=keep_failed, model=model, replace_existing=replace_existing,
+            requested_id=requested_id,
         )
 
 
 def _transcribe_locked(
     paths: Paths, cache: Path, *, language: str, keywords: tuple[str, ...],
     prompt: str, chunk_seconds: int | None, overlap_seconds: int,
-    keep_failed: bool,
+    keep_failed: bool, model: str, replace_existing: bool, requested_id: str | None,
 ) -> dict:
     """Destination lock already held; skip existing outputs before transfer."""
-    if remote_exists(paths.transcript) if paths.remote else Path(paths.transcript).exists():
+    replacement = None
+    if replace_existing:
+        replacement = _replacement(paths, requested_id)
+        if replacement is None:
+            return {"ok": False, "status": "replacement_missing", "transcript": paths.transcript}
+        old = (
+            run_rclone("cat", paths.transcript, "--tail", "4096").stdout if paths.remote
+            else Path(paths.transcript).read_text(encoding="utf-8")
+        )
+        previous_sha = source_fingerprint(old)
+        if previous_sha != replacement.source_sha256:
+            return {
+                "ok": False, "status": "source_mismatch" if previous_sha else "unverified_existing",
+                "transcript": paths.transcript,
+            }
+        if paths.remote:
+            _replacement_token()
+    elif remote_exists(paths.transcript) if paths.remote else Path(paths.transcript).exists():
         status = existing_transcript_status(paths)
         return {
             "ok": status == "skipped_existing", "status": status, "source": paths.source,
-            "transcript": paths.transcript, "model": MODEL,
+            "transcript": paths.transcript,
             "url": _best_effort_remote_url(paths.transcript) if paths.remote else None,
         }
     if paths.remote:
@@ -477,7 +585,7 @@ def _transcribe_locked(
 
 
         settings = {
-            "model": MODEL,
+            "model": model,
             "source_filename": local_source.name,
             "source_sha256": hash_file(local_source),
             "language": language,
@@ -487,18 +595,21 @@ def _transcribe_locked(
             "overlap_seconds": overlap_seconds,
             "audio_strategy": "original-or-stream-copy-v1",
         }
+        if replacement and settings["source_sha256"] != replacement.source_sha256:
+            raise ValueError("전사 전에 원본 음성이 변경되었습니다.")
         signature = hashlib.sha256(
             json.dumps(settings, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
         job_dir = cache / "jobs" / signature
         with job_lock(cache, signature):
             # Recheck after lock acquisition to prevent duplicate API billing.
-            ensure_free_destination(paths)
+            if replacement is None:
+                ensure_free_destination(paths)
             try:
                 transcribe_file(
                     local_source, job_dir, chunk_seconds=chunk_seconds,
                     overlap_seconds=overlap_seconds, language=language,
-                    keywords=keywords, prompt=prompt,
+                    keywords=keywords, prompt=prompt, model=model,
                 )
                 manifest = json.loads(
                     (job_dir / "manifest.json").read_text(encoding="utf-8")
@@ -524,10 +635,21 @@ def _transcribe_locked(
                         detected_languages=detected_languages,
                     ),
                 )
-                if paths.remote:
+                if replacement and (
+                    manifest["source_sha256"] != replacement.source_sha256
+                    or _replacement(paths, requested_id) != replacement
+                ):
+                    raise ValueError("전사 중에 원본 음성 또는 기존 TXT가 변경되었습니다.")
+                if replacement and replacement.drive_id:
+                    data = contents.encode("utf-8")
+                    updated = update_transcript(replacement.drive_id, _replacement_token(), data)
+                    if (updated.get("id") != replacement.drive_id
+                            or updated.get("sha256Checksum") != hashlib.sha256(data).hexdigest()):
+                        raise RuntimeError("Google Drive가 반환한 갱신 결과를 확인하지 못했습니다.")
+                elif paths.remote:
                     _publish_remote(contents, paths.transcript, job_dir)
                 else:
-                    _publish_local(contents, Path(paths.transcript))
+                    _publish_local(contents, Path(paths.transcript), replace=replacement is not None)
             except BaseException:
                 if not keep_failed and job_dir.is_dir():
                     try:
@@ -551,10 +673,13 @@ def _transcribe_locked(
                 shutil.rmtree(job_dir)
             except OSError as exc:
                 print(f"주의: 완료된 캐시 정리에 실패했습니다: {exc}", file=sys.stderr)
+        if replacement and replacement.drive_id:
+            url = f"https://drive.google.com/file/d/{replacement.drive_id}/view"
+        else:
+            url = _best_effort_remote_url(paths.transcript) if paths.remote else None
         return {
-            "ok": True, "status": "created", "source": paths.source,
-            "transcript": paths.transcript, "model": MODEL,
-            "url": _best_effort_remote_url(paths.transcript) if paths.remote else None,
+            "ok": True, "status": "replaced" if replacement else "created", "source": paths.source,
+            "transcript": paths.transcript, "model": model, "url": url,
         }
     finally:
         if download is not None:

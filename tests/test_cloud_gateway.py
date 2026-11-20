@@ -39,10 +39,12 @@ class CloudGatewayTests(unittest.TestCase):
                     with self.assertRaises((KeyError, ValueError)):
                         create_server()
 
-    def test_only_two_tools(self):
+    def test_replacement_is_a_separate_destructive_tool(self):
         server = self.server()
-        self.assertEqual({tool.name for tool in asyncio.run(server.list_tools())},
-                         {"transcribe_audio", "get_transcription_status"})
+        tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+        self.assertEqual(set(tools), {"transcribe_audio", "retranscribe_audio", "get_transcription_status"})
+        self.assertFalse(tools["transcribe_audio"].annotations.destructiveHint)
+        self.assertTrue(tools["retranscribe_audio"].annotations.destructiveHint)
 
     def test_transcribe_tool_exposes_optional_context_fields(self):
         tools = {

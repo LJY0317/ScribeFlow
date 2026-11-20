@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,9 +18,11 @@ from scribeflow.pipeline import (
     resolve_source, run_rclone, scan_drive, transcribe,
 )
 from scribeflow.provenance import (
+    TranscriptMetadata,
     source_fingerprint,
     stamp_transcript,
     strip_transcript_footer,
+    transcript_model,
 )
 
 
@@ -51,6 +54,31 @@ class FilePathTests(unittest.TestCase):
         self.assertEqual(result["already_transcribed"], 1)
         self.assertEqual(result["untranscribed_count"], 1)
         self.assertEqual(result["untranscribed"][0]["source"], "gdrive:example/lecture.m4a")
+
+    def test_model_inventory_uses_txt_footers_and_reports_legacy_as_unknown(self):
+        sha = hashlib.sha256(b"audio").hexdigest()
+        metadata = TranscriptMetadata("new.m4a", 5, 10, "OpenAI", "model-old", datetime.now(timezone.utc))
+        entries = [
+            {"Path": name + ".m4a", "ID": name + "-audio", "Hashes": {"sha256": sha}}
+            for name in ("legacy", "new")
+        ] + [{"Path": name + ".txt", "ID": name + "-txt"} for name in ("legacy", "new")]
+        with patch("scribeflow.pipeline.run_rclone") as rclone:
+            def reply(*args):
+                if args[0] == "lsjson":
+                    return type("R", (), {"stdout": json.dumps(entries)})()
+                details = metadata if args[1] == "gdrive:new.txt" else None
+                return type("R", (), {"stdout": stamp_transcript("본문", sha, details)})()
+
+            rclone.side_effect = reply
+            result = scan_drive("gdrive:", include_models=True)
+        legacy, current = result["transcribed"]
+        self.assertIsNone(legacy["model"])
+        self.assertEqual(current["drive_file_id"], "new-audio")
+        self.assertEqual(current["model"]["model_id"], "model-old")
+        self.assertIsNone(current["model"]["snapshot"])
+        self.assertEqual(result["model_counts"], [
+            {"model_id": None, "count": 1}, {"model_id": "model-old", "count": 1},
+        ])
 
     def test_local_same_folder_and_stem(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -128,7 +156,7 @@ def mocked_engine(source, directory, **kwargs):
         "source_size": source.stat().st_size,
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         "duration_seconds": 10,
-        "model": "gpt-transcribe",
+        "model": kwargs.get("model", "gpt-transcribe"),
         "chunks": [{"index": 1, "start": 0, "end": 10}],
     }
     (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -137,6 +165,75 @@ def mocked_engine(source, directory, **kwargs):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_explicit_drive_replacement_preserves_id_and_tracks_configured_model(self):
+        audio = b"synthetic audio"
+        sha = hashlib.sha256(audio).hexdigest()
+        voice = "gdrive:folder/recording.m4a"
+        target = "gdrive:folder/recording.txt"
+        audio_id = "audio_test_123456789012"
+        target_id = "transcript_test_123456789012"
+        existing = stamp_transcript("기존 전사문", sha)
+
+        def fake_rclone(command, *args):
+            output = ""
+            if command == "lsjson":
+                self.assertEqual(args[0], "gdrive:folder")
+                output = json.dumps([
+                    {"Name": "recording.m4a", "ID": audio_id, "Hashes": {"sha256": sha}},
+                    {"Name": "recording.txt", "ID": target_id,
+                     "Hashes": {"sha256": hashlib.sha256(existing.encode()).hexdigest()}},
+                ])
+            elif command == "cat":
+                self.assertEqual(args[0], target)
+                output = existing
+            elif command == "copyto":
+                self.assertEqual(args[0], voice)
+                Path(args[1]).write_bytes(audio)
+            else:
+                self.fail(f"Unexpected rclone command: {command}")
+            return type("R", (), {"stdout": output})()
+
+        def update(file_id, token, data):
+            self.assertEqual(file_id, target_id)
+            self.assertEqual(token, "test-token")
+            self.assertEqual(transcript_model(data.decode())["model_id"], "next-model-2030-01-01")
+            self.assertEqual(source_fingerprint(data.decode()), sha)
+            return {"id": file_id, "sha256Checksum": hashlib.sha256(data).hexdigest()}
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {"SCRIBEFLOW_TRANSCRIPTION_MODEL": "next-model-2030-01-01"}),
+            patch("scribeflow.pipeline.cache_root", return_value=Path(directory)),
+            patch("scribeflow.pipeline.resolve_source", return_value=voice),
+            patch("scribeflow.pipeline.run_rclone", side_effect=fake_rclone),
+            patch("scribeflow.pipeline._replacement_token", return_value="test-token"),
+            patch("scribeflow.pipeline.transcribe_file", side_effect=mocked_engine) as engine,
+            patch("scribeflow.pipeline.update_transcript", side_effect=update) as upload,
+        ):
+            outcome = transcribe(audio_id, replace_existing=True)
+            self.assertEqual(engine.call_args.kwargs["model"], "next-model-2030-01-01")
+            self.assertEqual(outcome["status"], "replaced")
+            self.assertEqual(outcome["url"], f"https://drive.google.com/file/d/{target_id}/view")
+            upload.assert_called_once()
+
+            existing = stamp_transcript("다른 원본", "0" * 64)
+            self.assertEqual(transcribe(audio_id, replace_existing=True)["status"], "source_mismatch")
+            self.assertEqual(engine.call_count, 1)
+            upload.assert_called_once()
+
+            existing = stamp_transcript("기존 전사문", sha)
+
+            def edit_during_transcription(source, directory, **kwargs):
+                nonlocal existing
+                existing = stamp_transcript("사용자가 편집한 전사문", sha)
+                return mocked_engine(source, directory, **kwargs)
+
+            engine.side_effect = edit_during_transcription
+            with self.assertRaisesRegex(ValueError, "변경되었습니다"):
+                transcribe(audio_id, replace_existing=True)
+            self.assertIn("사용자가 편집한 전사문", existing)
+            upload.assert_called_once()
+
     def test_concurrent_different_settings_only_call_model_once(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -77,7 +77,7 @@ gcloud run jobs deploy "$JOB" --image "$IMAGE" --project "$GCP_PROJECT" \
   --region "$REGION" --service-account "$WORKER_SA" \
   --tasks 1 --parallelism 1 --max-retries 0 --task-timeout 3600s \
   --cpu 1 --memory 2Gi \
-  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=worker,SCRIBEFLOW_RCLONE_CONFIG_SECRET=/secrets/rclone.conf" \
+  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=worker,SCRIBEFLOW_RCLONE_CONFIG_SECRET=/secrets/rclone.conf,SCRIBEFLOW_TRANSCRIPTION_MODEL=${SCRIBEFLOW_TRANSCRIPTION_MODEL:-gpt-transcribe}" \
   --set-secrets="/secrets/rclone.conf=${RCLONE_SECRET}:latest,OPENAI_API_KEY=${OPENAI_SECRET}:latest"
 
 gcloud run jobs add-iam-policy-binding "$JOB" --project "$GCP_PROJECT" \

@@ -23,6 +23,7 @@ def run_job() -> dict:
         os.environ.get("SCRIBEFLOW_PROMPT", ""),
     )
     language = normalize_language(os.environ.get("SCRIBEFLOW_LANGUAGE", "auto"))
+    replace_existing = os.environ.get("SCRIBEFLOW_REPLACE_EXISTING") == "true"
 
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,}", file_id):
         raise ValueError("SCRIBEFLOW_SOURCE_FILE_ID must be a Google Drive file ID")
@@ -45,6 +46,7 @@ def run_job() -> dict:
             os.environ["SCRIBEFLOW_CACHE_DIR"] = str(private / "cache")
             return transcribe(
                 file_id, keywords=keywords, prompt=prompt, language=language,
+                replace_existing=replace_existing,
             )
         finally:
             if old_config is None:

@@ -31,11 +31,12 @@ def main(argv: list[str] | None = None) -> int:
     paths = sub.add_parser("paths", help="원본과 최종 전사문 위치 확인 (API 호출 없음)")
     paths.add_argument("audio")
 
-    scan = sub.add_parser("scan", help="Google Drive 폴더의 미전사 음성 파일 검색 (API 호출 없음)")
+    scan = sub.add_parser("scan", help="Google Drive 폴더의 전사 상태 조회 (OpenAI 호출 없음)")
     scan.add_argument("folder", help="gdrive: 또는 gdrive:하위폴더")
     scan.add_argument("--recursive", action="store_true")
     scan.add_argument("--limit", type=int, default=50)
     scan.add_argument("--json", action="store_true", help="에이전트용 JSON 출력")
+    scan.add_argument("--models", action="store_true", help="기존 TXT의 모델·스냅샷과 음성 파일 ID 조회")
 
     cache = sub.add_parser("cache", help="실패한 작업의 임시 캐시 확인·정리")
     cache.add_argument("action", choices=["status", "clean"])
@@ -54,6 +55,10 @@ def main(argv: list[str] | None = None) -> int:
     command = sub.add_parser("transcribe", help="구간별 전사 후 하나의 텍스트 저장")
     command.add_argument("audio", help="로컬 경로 또는 gdrive:폴더/녹음.m4a")
     command.add_argument("--output", help="동일한 폴더에 저장할 .txt 파일명")
+    command.add_argument(
+        "--replace-existing", action="store_true",
+        help="원본 SHA-256이 일치하는 기존 TXT를 재전사 결과로 갱신",
+    )
     command.add_argument(
         "--chunk-seconds", type=int, default=None,
         help="구간 길이(초). 미지정 시 음질을 유지하며 25MB 한도 내 최대한 길게",
@@ -100,7 +105,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "scan":
             if not 1 <= args.limit <= 1000:
                 raise ValueError("--limit는 1~1000 사이여야 합니다.")
-            result = scan_drive(args.folder, recursive=args.recursive, limit=args.limit)
+            result = scan_drive(
+                args.folder, recursive=args.recursive, limit=args.limit, include_models=args.models,
+            )
             print(json.dumps(result, ensure_ascii=False, indent=None if args.json else 2))
         elif args.command == "cache":
             result = clean_cache(cache_root()) if args.action == "clean" else cache_stats(cache_root())
@@ -119,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
                 overlap_seconds=args.overlap_seconds,
                 language=args.language,
                 keywords=tuple(args.keyword), prompt=args.prompt,
+                replace_existing=args.replace_existing,
             )
             if args.json:
                 print(json.dumps(result, ensure_ascii=False))

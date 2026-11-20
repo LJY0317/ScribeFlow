@@ -106,6 +106,26 @@ def create_server():
         )
 
     @server.tool(
+        description=(
+            "Re-transcribe one explicitly selected Drive recording with the configured OpenAI model "
+            "and replace the existing ScribeFlow TXT in place. This incurs OpenAI charges. "
+            "Only use when the user explicitly requests replacing that transcription. "
+            "Requires an existing TXT whose recorded source SHA-256 matches the audio. "
+            "Use get_transcription_status to follow the returned operation."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True),
+    )
+    def retranscribe_audio(
+        file_id: str, keywords: list[str] | None = None, prompt: str = "",
+        language: str = "auto",
+    ) -> dict:
+        _require_owner(owner_email)
+        return backend.start(
+            file_id, keywords=keywords, prompt=prompt, language=language,
+            retry=True, replace_existing=True,
+        )
+
+    @server.tool(
         description="Check a submitted transcription without restarting it.",
         annotations=ToolAnnotations(readOnlyHint=True),
     )

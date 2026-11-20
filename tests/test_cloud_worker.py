@@ -35,7 +35,7 @@ class CloudWorkerTests(unittest.TestCase):
                 def fake_transcribe(file_id, **kwargs):
                     self.assertEqual(file_id, "audio_" + "a" * 25)
                     self.assertEqual(kwargs, {
-                        "keywords": (), "prompt": "", "language": "auto",
+                        "keywords": (), "prompt": "", "language": "auto", "replace_existing": False,
                     })
                     config = Path(os.environ["RCLONE_CONFIG"])
                     self.assertTrue(config.exists())
@@ -64,6 +64,7 @@ class CloudWorkerTests(unittest.TestCase):
                     self.assertTrue(run_job()["ok"])
                 transcribe.assert_called_once_with(
                     "audio_" + "a" * 25, keywords=(), prompt="", language="auto",
+                    replace_existing=False,
                 )
 
     def test_context_from_job_environment_reaches_transcription(self):
@@ -77,6 +78,7 @@ class CloudWorkerTests(unittest.TestCase):
                 "SCRIBEFLOW_KEYWORDS_JSON": '["Kubernetes", "OAuth"]',
                 "SCRIBEFLOW_PROMPT": "Technical discussion",
                 "SCRIBEFLOW_LANGUAGE": "en",
+                "SCRIBEFLOW_REPLACE_EXISTING": "true",
             }):
                 with patch(
                     "scribeflow.cloud_worker.transcribe", return_value={"ok": True}
@@ -87,6 +89,7 @@ class CloudWorkerTests(unittest.TestCase):
                         keywords=("Kubernetes", "OAuth"),
                         prompt="Technical discussion",
                         language="en",
+                        replace_existing=True,
                     )
 
     def test_invalid_context_stops_before_transcription(self):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -20,6 +21,13 @@ CHUNK_TARGET_BYTES = 24_000_000  # Headroom for stream-copied container overhead
 SUPPORTED_AUDIO_SUFFIXES = frozenset({
     ".flac", ".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".ogg", ".wav", ".webm",
 })
+
+
+def configured_model() -> str:
+    model = os.environ.get("SCRIBEFLOW_TRANSCRIPTION_MODEL", "").strip() or MODEL
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", model):
+        raise ValueError("SCRIBEFLOW_TRANSCRIPTION_MODEL must be an OpenAI model ID")
+    return model
 
 
 def auto_chunk_seconds(duration: float, size_bytes: int) -> int:
@@ -298,8 +306,10 @@ def transcribe_file(
     source: Path, output: Path, chunk_seconds: int | None = None,
     overlap_seconds: int = 3, language: str = "auto",
     keywords: tuple[str, ...] = (), prompt: str = "",
+    *, model: str | None = None,
 ) -> Path:
     """Transcribe the original file when possible, otherwise stream-copy chunks."""
+    model = model if model is not None else configured_model()
     api_key = get_api_key()
     if not api_key:
         raise RuntimeError(
@@ -335,7 +345,7 @@ def transcribe_file(
         "source_sha256": source_sha256,
         "source_size": info["size_bytes"],
         "duration_seconds": info["duration_seconds"],
-        "model": MODEL,
+        "model": model,
         "encoding": "original" if direct else "stream-copy",
         "language": language,
         "keywords": list(keywords),
@@ -428,7 +438,7 @@ def transcribe_file(
             f"{clock(chunk.start)}~{clock(chunk.end)} 전사 요청",
             file=sys.stderr, flush=True,
         )
-        payload = {"model": MODEL}
+        payload = {"model": model}
         if language != "auto":
             payload["languages"] = [language]
         if keywords:

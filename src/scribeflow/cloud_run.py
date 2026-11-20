@@ -91,7 +91,7 @@ class CloudRunJobs:
 
     def start(
         self, file_id: str, keywords: list[str] | tuple[str, ...] | None = None,
-        prompt: str = "", language: str = "auto",
+        prompt: str = "", language: str = "auto", *, replace_existing: bool = False,
     ) -> dict:
         """Queue one job with optional vocabulary/context; no audio in gateway."""
         if not _FILE_ID.fullmatch(file_id):
@@ -108,6 +108,8 @@ class CloudRunJobs:
             variables.append({"name": "SCRIBEFLOW_PROMPT", "value": context})
         if language != "auto":
             variables.append({"name": "SCRIBEFLOW_LANGUAGE", "value": language})
+        if replace_existing:
+            variables.append({"name": "SCRIBEFLOW_REPLACE_EXISTING", "value": "true"})
         operation = self._call("POST", self.target.resource + ":run", payload={
             "overrides": {
                 "containerOverrides": [{

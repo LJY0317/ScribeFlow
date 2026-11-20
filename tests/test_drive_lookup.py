@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 from scribeflow.drive_lookup import (
     DrivePathCandidate,
     _drive_metadata,
-    _existing_access_token,
+    existing_access_token,
     candidate_from_id,
 )
 
@@ -41,7 +41,7 @@ class DriveLookupTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with patch.dict(os.environ, {"RCLONE_CONFIG": str(path)}):
-                self.assertEqual(_existing_access_token(), "test-private-bearer")
+                self.assertEqual(existing_access_token(), "test-private-bearer")
             self.assertIn("private-refresh-should-not-leak", path.read_text())
 
     def test_expired_or_missing_private_token_uses_fallback(self):
@@ -53,7 +53,7 @@ class DriveLookupTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with patch.dict(os.environ, {"RCLONE_CONFIG": str(path)}):
-                self.assertIsNone(_existing_access_token())
+                self.assertIsNone(existing_access_token())
             with patch.dict(os.environ, {"RCLONE_CONFIG": ""}):
                 self.assertIsNone(candidate_from_id(FILE_ID))
 
@@ -86,7 +86,7 @@ class DriveLookupTests(unittest.TestCase):
                 "id": FOLDER_ID, "name": "모임", "parents": [ROOT_ID],
             },
         }
-        with patch("scribeflow.drive_lookup._existing_access_token", return_value="token"):
+        with patch("scribeflow.drive_lookup.existing_access_token", return_value="token"):
             with patch("scribeflow.drive_lookup._drive_metadata", side_effect=lambda key, _: values[key]) as get:
                 candidate = candidate_from_id(FILE_ID)
         self.assertEqual(candidate, DrivePathCandidate("모임/녹음.m4a", False))
@@ -98,7 +98,7 @@ class DriveLookupTests(unittest.TestCase):
             FILE_ID: {"id": FILE_ID, "name": "lecture.mp3", "parents": [FOLDER_ID]},
             FOLDER_ID: {"id": FOLDER_ID, "name": "강의", "parents": [SCOPE_ID]},
         }
-        with patch("scribeflow.drive_lookup._existing_access_token", return_value="token"):
+        with patch("scribeflow.drive_lookup.existing_access_token", return_value="token"):
             with patch("scribeflow.drive_lookup._drive_metadata", side_effect=lambda key, _: values[key]):
                 self.assertEqual(
                     candidate_from_id(FILE_ID, SCOPE_ID),
@@ -116,7 +116,7 @@ class DriveLookupTests(unittest.TestCase):
             if key == HIDDEN_PARENT:
                 raise HTTPError("https://www.googleapis.com", 403, "Forbidden", {}, None)
             return values[key]
-        with patch("scribeflow.drive_lookup._existing_access_token", return_value="token"):
+        with patch("scribeflow.drive_lookup.existing_access_token", return_value="token"):
             with patch("scribeflow.drive_lookup._drive_metadata", side_effect=fetch):
                 self.assertEqual(
                     candidate_from_id(FILE_ID),
@@ -131,12 +131,12 @@ class DriveLookupTests(unittest.TestCase):
             if key == HIDDEN_PARENT:
                 raise HTTPError("https://www.googleapis.com", 404, "Not found", {}, None)
             return values[key]
-        with patch("scribeflow.drive_lookup._existing_access_token", return_value="token"):
+        with patch("scribeflow.drive_lookup.existing_access_token", return_value="token"):
             with patch("scribeflow.drive_lookup._drive_metadata", side_effect=fetch):
                 self.assertIsNone(candidate_from_id(FILE_ID, SCOPE_ID))
 
     def test_names_with_path_separators_and_parent_cycles_fall_back(self):
-        with patch("scribeflow.drive_lookup._existing_access_token", return_value="token"):
+        with patch("scribeflow.drive_lookup.existing_access_token", return_value="token"):
             with patch("scribeflow.drive_lookup._drive_metadata", side_effect=lambda key, _: {
                 "root": {"id": ROOT_ID},
                 FILE_ID: {

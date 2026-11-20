@@ -24,6 +24,7 @@ from urllib.request import Request, urlopen
 
 _ID = re.compile(r"[A-Za-z0-9_-]{10,}")
 _DRIVE_API = "https://www.googleapis.com/drive/v3/files/"
+_DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files/"
 _FOLDER_MIME = "application/vnd.google-apps.folder"
 _MAX_DEPTH = 32
 
@@ -34,13 +35,13 @@ class DrivePathCandidate:
     shared_with_me: bool
 
 
-def _existing_access_token() -> str | None:
+def existing_access_token(config_path: str | None = None) -> str | None:
     """Read only the token for an explicitly configured, local rclone remote.
 
     We deliberately avoid printing config dumps or taking ownership of OAuth
     refresh tokens. The caller can ask rclone to refresh its own token first.
     """
-    config_path = os.environ.get("RCLONE_CONFIG")
+    config_path = config_path or os.environ.get("RCLONE_CONFIG")
     if not config_path:
         return None
     try:
@@ -82,6 +83,23 @@ def _drive_metadata(file_id: str, token: str) -> dict:
         return json.loads(reply.read())
 
 
+def update_transcript(file_id: str, token: str, data: bytes) -> dict:
+    """Replace the contents of an existing Drive file by ID."""
+    if not _ID.fullmatch(file_id):
+        raise ValueError("Invalid Google Drive transcript ID")
+    query = urlencode({
+        "uploadType": "media", "supportsAllDrives": "true",
+        "fields": "id,sha256Checksum",
+    })
+    request = Request(
+        _DRIVE_UPLOAD_API + file_id + "?" + query,
+        headers={"Authorization": "Bearer " + token, "Content-Type": "text/plain"},
+        method="PATCH", data=data,
+    )
+    with urlopen(request, timeout=60) as reply:
+        return json.loads(reply.read())
+
+
 def _valid_component(name: object) -> bool:
     return (
         isinstance(name, str) and len(name) > 0
@@ -97,7 +115,7 @@ def candidate_from_id(file_id: str, root_folder_id: str | None = None) -> DriveP
     For a folder shared from another account, we stop at the last accessible
     ancestor and propose the rclone shared-with-me view.
     """
-    token = _existing_access_token()
+    token = existing_access_token()
     if not token or not _ID.fullmatch(file_id):
         return None
     if root_folder_id and not _ID.fullmatch(root_folder_id):

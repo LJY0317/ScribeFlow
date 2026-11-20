@@ -10,9 +10,14 @@ from datetime import datetime, timedelta
 from . import __version__
 
 _FOOTER = re.compile(
-    r"^(?:<!-- ScribeFlow Metadata: [^\r\n]* -->\r?\n)?"
-    r"<!-- ScribeFlow SHA256: ([0-9a-f]{64}) -->\s*\Z",
+    r"^(?:<!-- ScribeFlow Metadata: (?P<metadata>[^\r\n]*) -->\r?\n)?"
+    r"<!-- ScribeFlow SHA256: (?P<sha256>[0-9a-f]{64}) -->\s*\Z",
     re.MULTILINE,
+)
+_MODEL_DETAILS = re.compile(
+    r" \| Provider: (?P<provider>[^|]+) \| Model ID: (?P<model_id>[\w.:-]+)"
+    r" \| Snapshot: (?P<snapshot>[^|]+) \| Transcribed at: (?P<transcribed_at>[^|]+)"
+    r" \| ScribeFlow version: (?P<scribeflow_version>[^|]+)\Z"
 )
 
 
@@ -31,7 +36,19 @@ class TranscriptMetadata:
 def source_fingerprint(transcript: str) -> str | None:
     """Return the source audio SHA-256 only when the *last* line is valid."""
     match = _FOOTER.search(transcript)
-    return match.group(1) if match else None
+    return match["sha256"] if match else None
+
+
+def transcript_model(transcript: str) -> dict | None:
+    """Read recorded model details from current TXT; legacy SHA-only TXT has none."""
+    footer = _FOOTER.search(transcript)
+    model = _MODEL_DETAILS.search(footer["metadata"] or "") if footer else None
+    if model is None:
+        return None
+    details = model.groupdict()
+    if details["snapshot"] == "미공개":
+        details["snapshot"] = None
+    return details
 
 
 def strip_transcript_footer(transcript: str) -> str:

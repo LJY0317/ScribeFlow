@@ -59,6 +59,9 @@ export SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID='구글드라이브_폴더_ID'
 # Drive 폴더의 아직 전사하지 않은 음성 파일 검색 (전사 API 호출 없음)
 scribeflow scan gdrive: --recursive --json
 
+# 기존 TXT의 기록된 전사 모델과 각 원본 Drive 파일 ID 조회
+scribeflow scan 'gdrive:폴더' --recursive --models --limit 1000 --json
+
 # 파일 URL 입력 (일반 Google Drive 파일 보기 링크)
 scribeflow paths 'https://drive.google.com/file/d/파일_ID/view'
 scribeflow transcribe 'https://drive.google.com/file/d/파일_ID/view' --json
@@ -69,11 +72,17 @@ scribeflow transcribe '파일_ID' --json
 
 `SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID`는 선택 사항입니다. 설정하면 해당 폴더와 하위 파일에서만 검색하고, 설정하지 않으면 연결된 Drive의 기본 루트를 사용합니다. **파일 URL/ID를 처음 해석할 때 해당 범위의 파일 메타데이터를 조회**합니다. 넓은 Drive에서는 상위 폴더 ID를 지정하면 검색이 빨라집니다.
 
-완료 결과 JSON에는 `status`, `source`, `transcript`, `model`, `url`(Drive인 경우)이 포함됩니다. 같은 폴더에 동명 TXT가 있으면 마지막 줄의 SHA-256을 원본 음성과 비교합니다. 일치하면 `skipped_existing`, 해시가 없으면 `unverified_existing`, 불일치하면 `source_mismatch`입니다. **어떤 경우에도 기존 TXT를 자동 덮어쓰거나 재전사하지 않습니다.** 미확인·불일치 결과는 종료 코드 1로 반환합니다. 재전사하려면 `--output`으로 같은 폴더의 다른 `.txt` 파일명을 지정하세요.
+새로 전사한 결과의 JSON에는 `status`, `source`, `transcript`, `model`, `url`(Drive인 경우)이 포함됩니다. 일반 요청에서 동명 TXT의 원본 SHA-256이 일치하면 `skipped_existing`, 해시가 없으면 `unverified_existing`, 불일치하면 `source_mismatch`를 반환합니다. `--replace-existing`을 명시하면 해시가 일치하는 기존 TXT를 재전사 결과로 갱신합니다. 로컬 환경의 모델은 `SCRIBEFLOW_TRANSCRIPTION_MODEL`로 지정할 수 있으며 기본값은 `gpt-transcribe`입니다.
+
+`scan --models`는 기존 TXT 끝부분을 읽고 `transcribed`에 각 원본의 Drive ID, TXT ID, 해시 검증 상태, 공급자·모델 ID·스냅샷·전사 시각을 반환합니다. `model_counts`에서 모델별 개수를 확인할 수 있습니다. 오래된 TXT에 해시만 있으면 `model`은 `null`입니다. `--limit`은 반환 목록의 크기를 제한하며 개수는 조회 범위 전체를 반영합니다. 에이전트는 `status=skipped_existing`이며 원하는 구형 `model_id`와 일치하는 원본 ID를 골라 재전사 후보 목록을 만들 수 있습니다. 조회 결과는 표준 출력에만 표시됩니다.
 
 ### ChatGPT 원격 MCP 사용
 
-[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 지정해 전사할 수 있습니다. 서버가 제공하는 도구는 `transcribe_audio(file_id, keywords=None, prompt="", retry=False, language="auto")`, `get_transcription_status(operation)` 두 개입니다. `keywords`에는 실제 녹음에 등장할 가능성이 있는 이름·전문용어를, `prompt`에는 짧은 사실관계(예: `기술 강의 녹음`)를 **선택적으로** 전달할 수 있습니다. 이 정보는 인식 힌트이지 전사해야 할 발언이 아니므로 실제 녹음에 없는 대사를 제공하지 마세요. 기존 TXT가 있으면 힌트를 추가해도 자동 재전사하거나 덮어쓰지 않습니다. **같은 Google Drive 파일 ID의 요청을 반복하면** 별도 Cloud Run Job을 생성하지 않고 기존 실행 상태를 반환합니다. 완료·실패한 파일을 의도적으로 재전사하려면 `retry=True`를 명시해야 하며, 다시 실행하면 OpenAI API 사용료가 발생할 수 있습니다. 이전 요청의 실행 여부 또는 Cloud Run 기록을 확인할 수 없다면 최소 2시간 후 명시적으로만 재시도를 허용합니다. 작업 예약 기록은 7일의 만료 시각을 갖지만, 실제 자동 정리를 사용하려면 관리자가 `bash scripts/configure-claim-ttl.sh`로 Firestore TTL을 활성화해야 합니다. **ScribeFlow 자체에는 Drive 파일명 검색 도구가 없습니다.** ChatGPT가 폴더 이름만으로 파일을 찾게 하려면 Google Drive 연결 등 별도의 파일 검색 경로가 있어야 합니다. 원격 서비스는 로컬 맥북·CLI에 의존하지 않습니다.
+[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 전달합니다.
+
+- `transcribe_audio`는 새 녹음을 전사합니다. 같은 파일의 작업을 반복 요청하면 기존 실행 상태를 반환하고, 기존 TXT를 보호합니다. 작업 실패 등을 다시 시도할 때 `retry=True`를 사용할 수 있습니다.
+- `retranscribe_audio`는 선택한 녹음을 현재 설정 모델로 다시 전사하고, 원본 SHA-256이 일치하는 기존 TXT의 내용만 갱신합니다. 같은 Drive 파일 ID와 링크가 유지됩니다. 새 전사에 OpenAI API 사용료가 발생합니다.
+- `get_transcription_status`는 작업 상태를 조회합니다. 폴더에서 녹음이나 TXT를 찾을 때는 Google Drive 연결이나 위의 `scan` 명령을 이용합니다. 연결된 Google Drive에서 TXT를 읽을 수 있으면 파일 끝의 `Model ID`를 ChatGPT에서 직접 확인할 수 있습니다.
 
 ## 원문 보존과 오디오 처리
 
