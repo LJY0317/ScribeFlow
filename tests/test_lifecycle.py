@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from scribeflow.cache import cache_stats, clean_cache, retain_failed_cache
-from scribeflow.engine import transcribe_file
+from scribeflow.engine import MODEL, hash_file, transcribe_file
 from scribeflow.pipeline import NoSpeechDetectedError, transcribe
 from scribeflow.provenance import source_fingerprint
 
@@ -26,6 +26,11 @@ def fake_engine(source, output, *, texts=("반드시 남을 발언",), **kwargs)
     (output / "audio_chunks").mkdir(exist_ok=True)
     (output / "audio_chunks" / "intermediate.mp3").write_bytes(b"temporary packet data")
     manifest = {
+        "source_filename": source.name,
+        "source_size": source.stat().st_size,
+        "source_sha256": hash_file(source),
+        "duration_seconds": len(texts),
+        "model": MODEL,
         "chunks": [
             {"index": n, "start": n - 1, "end": n}
             for n in range(1, len(texts) + 1)
@@ -120,6 +125,8 @@ class PipelineLifecycleTests(unittest.TestCase):
                     result = transcribe(str(source))
             self.assertEqual(result["status"], "created")
             text = source.with_suffix(".txt").read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("[00:00:01–00:00:02]\n"))
+            self.assertEqual(sum(line.startswith("[") for line in text.splitlines()), 1)
             self.assertIn("대인 접수입니다.", text)
             self.assertNotIn("intermediate", text)
             self.assertIsNotNone(source_fingerprint(text))
@@ -238,7 +245,7 @@ class AudioChunkCleanupTests(unittest.TestCase):
             self.assertEqual(audio.read_bytes(), original)
             self.assertEqual(list((root / "job" / "audio_chunks").iterdir()), [])
             self.assertEqual(
-                len(list((root / "job" / "transcripts").glob("*.txt"))),
+                len(list((root / "job" / "transcripts").glob("*.json"))),
                 len(submitted),
             )
 

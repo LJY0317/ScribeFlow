@@ -16,6 +16,8 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from math import ceil
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -24,11 +26,12 @@ from .drive_lookup import candidate_from_id
 from .engine import (
     MODEL,
     SUPPORTED_AUDIO_SUFFIXES,
+    clock,
     hash_file,
     transcribe_file,
 )
 from .formatting import format_paragraphs
-from .provenance import source_fingerprint, stamp_transcript
+from .provenance import TranscriptMetadata, source_fingerprint, stamp_transcript
 
 
 @dataclass(frozen=True)
@@ -393,20 +396,27 @@ class NoSpeechDetectedError(ValueError):
     """No recognizable speech was returned; do not publish a blank TXT."""
 
 
-def plain_transcript(job_dir: Path) -> str:
-    """Publish only recognized speech, never generated headings or metadata."""
-    manifest = json.loads((job_dir / "manifest.json").read_text(encoding="utf-8"))
-    chunks = manifest["chunks"]
+def assemble_transcript(job_dir: Path, chunks: list[dict]) -> tuple[str, tuple[str, ...]]:
+    """Join cached speech and collect the languages reported for its chunks."""
     segments = []
+    languages: list[str] = []
     for chunk in chunks:
-        text = (job_dir / "transcripts" / f"{chunk['index']:04d}.txt").read_text(
-            encoding="utf-8"
-        ).strip()
-        if text:
-            segments.append(text)
-    if not segments:
-        return ""
-    return "\n\n".join(format_paragraphs(text).strip() for text in segments) + "\n"
+        result_path = job_dir / "transcripts" / f"{chunk['index']:04d}.json"
+        if result_path.exists():
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            text = result["text"]
+            languages.extend(result["languages"])
+        else:
+            # Older resumable jobs cached the text alone.
+            text = result_path.with_suffix(".txt").read_text(encoding="utf-8").strip()
+        if not text:
+            continue
+        text = format_paragraphs(text).strip()
+        start = clock(chunk["start"])
+        end = clock(ceil(chunk["end"]))
+        segments.append(f"[{start}–{end}]\n{text}")
+    text = "\n\n".join(segments)
+    return (text + "\n" if text else ""), tuple(dict.fromkeys(languages))
 
 
 def transcribe(
@@ -490,14 +500,29 @@ def _transcribe_locked(
                     overlap_seconds=overlap_seconds, language=language,
                     keywords=keywords, prompt=prompt,
                 )
-                recognized = plain_transcript(job_dir)
+                manifest = json.loads(
+                    (job_dir / "manifest.json").read_text(encoding="utf-8")
+                )
+                recognized, detected_languages = assemble_transcript(
+                    job_dir, manifest["chunks"],
+                )
                 if not recognized.strip():
                     raise NoSpeechDetectedError(
                         "음성에서 인식된 발언이 없습니다. "
                         "비어 있는 TXT는 생성하지 않았습니다."
                     )
                 contents = stamp_transcript(
-                    recognized, settings["source_sha256"]
+                    recognized,
+                    manifest["source_sha256"],
+                    TranscriptMetadata(
+                        source_filename=manifest["source_filename"],
+                        source_size_bytes=manifest["source_size"],
+                        duration_seconds=manifest["duration_seconds"],
+                        provider="OpenAI",
+                        model_id=manifest["model"],
+                        completed_at=datetime.now(timezone.utc),
+                        detected_languages=detected_languages,
+                    ),
                 )
                 if paths.remote:
                     _publish_remote(contents, paths.transcript, job_dir)

@@ -345,7 +345,7 @@ def transcribe_file(
     }
     manifest = output / "manifest.json"
     chunk_dir = output / "audio_chunks"
-    text_dir = output / "transcripts"
+    result_dir = output / "transcripts"
 
     if manifest.exists():
         previous = json.loads(manifest.read_text(encoding="utf-8"))
@@ -390,7 +390,7 @@ def transcribe_file(
                     publish_prepared_chunk(stage / suffix, chunk_dir / suffix)
 
     chunk_dir.mkdir(exist_ok=True)
-    text_dir.mkdir(exist_ok=True)
+    result_dir.mkdir(exist_ok=True)
 
     def release_completed_chunk(chunk: Chunk) -> None:
         """Free audio bytes immediately after a segment text is durable.
@@ -408,8 +408,8 @@ def transcribe_file(
 
     client = None
     for chunk in chunks:
-        text_path = text_dir / (chunk.name + ".txt")
-        if text_path.exists():
+        result_path = result_dir / (chunk.name + ".json")
+        if result_path.exists() or result_path.with_suffix(".txt").exists():
             release_completed_chunk(chunk)
             print(f"[{chunk.index}/{len(chunks)}] 기존 전사문 재사용", file=sys.stderr)
             continue
@@ -440,7 +440,18 @@ def transcribe_file(
         text = getattr(response, "text", None)
         if not isinstance(text, str):
             raise RuntimeError("API에서 텍스트 결과를 받지 못했습니다.")
-        write_text_atomic(text_path, text.strip() + "\n")
+        detected_languages = []
+        for detected in getattr(response, "languages", None) or ():
+            code = (
+                detected.get("code") if isinstance(detected, dict)
+                else getattr(detected, "code", None)
+            )
+            if isinstance(code, str) and re.fullmatch(r"[A-Za-z]+(?:-[A-Za-z0-9]+)*", code):
+                detected_languages.append(code)
+        # Keep the language result and text in the same atomic cache write.
+        write_text_atomic(result_path, json.dumps(
+            {"text": text.strip(), "languages": detected_languages}, ensure_ascii=False,
+        ))
         release_completed_chunk(chunk)
 
     return output

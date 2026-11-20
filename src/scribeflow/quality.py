@@ -2,8 +2,8 @@
 
 This module never calls OpenAI or changes the user's source files.
 CER is Levenshtein distance divided by reference character count. Text is
-NFC-normalized, case-folded, with whitespace/punctuation and the provenance
-SHA-256 footer ignored; these choices measure spoken content rather than layout.
+NFC-normalized, case-folded, with whitespace, punctuation, audio range labels
+and the provenance footer ignored.
 """
 
 from __future__ import annotations
@@ -12,15 +12,19 @@ import re
 import unicodedata
 from collections.abc import Iterable
 
-_SOURCE_SHA_FOOTER = re.compile(
-    r"\s*<!-- ScribeFlow SHA256: [0-9a-f]{64} -->\s*$"
+from .provenance import strip_transcript_footer
+
+_AUDIO_RANGE_LINE = re.compile(
+    r"^\[[0-9]{2,}:[0-9]{2}:[0-9]{2}–[0-9]{2,}:[0-9]{2}:[0-9]{2}\]\r?\n",
+    re.MULTILINE,
 )
 
 
 def comparable_text(text: str) -> str:
     if not isinstance(text, str):
         raise TypeError("전사문은 텍스트여야 합니다.")
-    stripped = _SOURCE_SHA_FOOTER.sub("", text)
+    stripped = strip_transcript_footer(text)
+    stripped = _AUDIO_RANGE_LINE.sub("", stripped)
     normalized = unicodedata.normalize("NFC", stripped).casefold()
     return "".join(
         char for char in normalized

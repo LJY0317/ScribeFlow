@@ -1,14 +1,48 @@
 import hashlib
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from scribeflow import __version__
 from scribeflow.pipeline import transcribe
-from scribeflow.provenance import source_fingerprint, stamp_transcript
+from scribeflow.provenance import (
+    TranscriptMetadata,
+    source_fingerprint,
+    stamp_transcript,
+    strip_transcript_footer,
+)
 
 
 class ProvenanceTests(unittest.TestCase):
+    def test_metadata_footer_preserves_legacy_last_line_and_spoken_text(self):
+        original = "안녕하세요.\n"
+        sha = "a" * 64
+        metadata = TranscriptMetadata(
+            source_filename='녹음 "A" -->\n.m4a',
+            source_size_bytes=6_430_288,
+            duration_seconds=1800.125,
+            provider="OpenAI",
+            model_id="gpt-transcribe",
+            completed_at=datetime(2026, 11, 21, 5, 30, tzinfo=timezone.utc),
+            detected_languages=("ko", "en"),
+        )
+        stamped = stamp_transcript(original, sha, metadata)
+        self.assertEqual(stamped.splitlines(), [
+            "안녕하세요.",
+            "",
+            r'<!-- ScribeFlow Metadata: Source: "녹음 \"A\" --\u003e\n.m4a"'
+            " | Duration: 0:30:00.125000 | Size: 6,430,288 bytes | Detected languages: ko, en"
+            " | Provider: OpenAI | Model ID: gpt-transcribe"
+            " | Snapshot: 미공개 | Transcribed at: 2026-11-21T05:30:00+00:00"
+            f" | ScribeFlow version: {__version__} -->",
+            f"<!-- ScribeFlow SHA256: {sha} -->",
+        ])
+        self.assertEqual(source_fingerprint(stamped), sha)
+        self.assertEqual(strip_transcript_footer(stamped), original + "\n")
+        self.assertEqual(stamp_transcript(stamped, sha, metadata), stamped)
+
     def test_source_fingerprint_is_last_line_and_idempotent(self):
         sha = hashlib.sha256(b"source").hexdigest()
         original = "안녕하세요.\n"

@@ -33,14 +33,18 @@ class IntegratedTranscriptionTests(unittest.TestCase):
         )
         return source
 
-    def fake_client(self, captured):
+    def fake_client(self, captured, language_responses=()):
+        responses = iter(language_responses)
+
         def create(*, file, **payload):
             captured.append({
                 "name": Path(file.name).name,
                 "body": file.read(),
                 "request": payload,
             })
-            return SimpleNamespace(text=f"전사 구간 {len(captured)}")
+            return SimpleNamespace(
+                text=f"전사 구간 {len(captured)}", languages=next(responses, []),
+            )
         return SimpleNamespace(
             audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create)),
         )
@@ -53,7 +57,10 @@ class IntegratedTranscriptionTests(unittest.TestCase):
             captured = []
             with patch("scribeflow.pipeline.cache_root", return_value=root / "cache"):
                 with patch("scribeflow.engine.get_api_key", return_value="test"):
-                    with patch("openai.OpenAI", return_value=self.fake_client(captured)):
+                    client = self.fake_client(
+                        captured, ([SimpleNamespace(code="ko"), SimpleNamespace(code="en")],),
+                    )
+                    with patch("openai.OpenAI", return_value=client):
                         created = transcribe(
                             str(audio), keywords=("대인접수",),
                             prompt="보험 통화",
@@ -68,7 +75,15 @@ class IntegratedTranscriptionTests(unittest.TestCase):
             self.assertEqual(captured[0]["request"]["prompt"], "보험 통화")
             self.assertEqual(audio.read_bytes(), original)
             text = audio.with_suffix(".txt").read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("[00:00:00–00:00:05]\n전사 구간 1\n"))
             self.assertEqual(source_fingerprint(text), hashlib.sha256(original).hexdigest())
+            self.assertIn(
+                'Source: "test-recording.m4a" | Duration: 0:00:05'
+                f" | Size: {len(original):,} bytes | Detected languages: ko, en | Provider: OpenAI"
+                " | Model ID: gpt-transcribe | Snapshot: 미공개",
+                text,
+            )
+            self.assertIn("Detected languages: ko, en", text)
             score = compare_transcripts("전사 구간 1", text, text)
             self.assertEqual(score["baseline"]["cer"], 0)
             self.assertEqual(score["candidate"]["cer"], 0)
@@ -83,8 +98,19 @@ class IntegratedTranscriptionTests(unittest.TestCase):
                 with patch("scribeflow.engine.CHUNK_TARGET_BYTES", 70_000):
                     with patch("scribeflow.pipeline.cache_root", return_value=root / "cache"):
                         with patch("scribeflow.engine.get_api_key", return_value="test"):
-                            with patch("openai.OpenAI", return_value=self.fake_client(captured)):
+                            client = self.fake_client(
+                                captured,
+                                ([{"code": "ko"}], [{"code": "en"}, {"code": "ko"}, {"code": "ja"}]),
+                            )
+                            with patch("openai.OpenAI", return_value=client) as connect:
+                                with patch(
+                                    "scribeflow.pipeline._publish_local",
+                                    side_effect=OSError("interrupted write"),
+                                ):
+                                    with self.assertRaisesRegex(OSError, "interrupted write"):
+                                        transcribe(str(audio))
                                 result = transcribe(str(audio))
+                                connect.assert_called_once()
             self.assertEqual(result["status"], "created")
             self.assertGreater(len(captured), 1)
             self.assertTrue(all(
@@ -101,8 +127,16 @@ class IntegratedTranscriptionTests(unittest.TestCase):
             )
             # Every submitted chunk generated one recognized segment.
             transcript = text_file.read_text(encoding="utf-8")
+            self.assertIn(f"Size: {len(original):,} bytes", transcript)
+            self.assertIn("Detected languages: ko, en, ja", transcript)
+            self.assertEqual(
+                sum(line.startswith("[") for line in transcript.splitlines()),
+                len(captured),
+            )
             for index in range(1, len(captured) + 1):
                 self.assertIn(f"전사 구간 {index}", transcript)
+            reference = " ".join(f"전사 구간 {index}" for index in range(1, len(captured) + 1))
+            self.assertEqual(compare_transcripts(reference, transcript, transcript)["candidate"]["cer"], 0)
             self.assertEqual(
                 {p.name for p in root.glob("*.txt")},
                 {text_file.name},

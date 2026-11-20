@@ -13,10 +13,14 @@ from filelock import FileLock
 
 from scribeflow.cache import MAX_AGE_SECONDS, cache_stats, clean_cache
 from scribeflow.pipeline import (
-    _drive_file_id, cache_root, paths_for, plain_transcript, remote_result_url,
+    _drive_file_id, assemble_transcript, cache_root, paths_for, remote_result_url,
     resolve_source, run_rclone, scan_drive, transcribe,
 )
-from scribeflow.provenance import source_fingerprint, stamp_transcript
+from scribeflow.provenance import (
+    source_fingerprint,
+    stamp_transcript,
+    strip_transcript_footer,
+)
 
 
 class FilePathTests(unittest.TestCase):
@@ -119,10 +123,17 @@ class FilePathTests(unittest.TestCase):
 def mocked_engine(source, directory, **kwargs):
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "transcripts").mkdir(exist_ok=True)
-    manifest = {"chunks": [{"index": 1, "start": 0, "end": 10}]}
+    manifest = {
+        "source_filename": source.name,
+        "source_size": source.stat().st_size,
+        "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "duration_seconds": 10,
+        "model": "gpt-transcribe",
+        "chunks": [{"index": 1, "start": 0, "end": 10}],
+    }
     (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (directory / "transcripts" / "0001.txt").write_text("테스트 전사문\n", encoding="utf-8")
-    return directory / "transcript.md"
+    return directory
 
 
 class PipelineTests(unittest.TestCase):
@@ -205,34 +216,47 @@ class PipelineTests(unittest.TestCase):
                         )
                         self.assertEqual(engine.call_count, 1)
                         self.assertEqual(remote_files[voice], b"mock-audio")
+                        transcript = remote_files[result_path].decode()
                         self.assertEqual(
-                            remote_files[result_path].decode(),
-                            stamp_transcript("테스트 전사문\n", hashlib.sha256(b"mock-audio").hexdigest()),
+                            strip_transcript_footer(transcript).strip(),
+                            "[00:00:00–00:00:10]\n테스트 전사문",
                         )
+                        self.assertEqual(
+                            source_fingerprint(transcript),
+                            hashlib.sha256(b"mock-audio").hexdigest(),
+                        )
+                        self.assertIn(
+                            'Source: "recording.m4a" | Duration: 0:00:10 | Size: 10 bytes',
+                            transcript,
+                        )
+                        self.assertIn("Detected languages: 확인 불가", transcript)
+                        self.assertEqual(set(remote_files), {voice, result_path})
                         self.assertEqual(cache_stats(cache)["jobs"], 0)
                         self.assertFalse(list((cache / "downloads").iterdir()))
                         self.assertEqual(transcribe(voice)["status"], "skipped_existing")
                         self.assertEqual(engine.call_count, 1)
 
-    def test_multi_chunk_output_contains_only_recognized_speech(self):
+    def test_multi_chunk_output_labels_original_audio_ranges(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "transcripts").mkdir()
-            (root / "manifest.json").write_text(json.dumps({
-                "chunks": [
-                    {"index": 1, "start": 0, "end": 120},
-                    {"index": 2, "start": 117, "end": 200},
-                ]
-            }), encoding="utf-8")
+            chunks = [
+                {"index": 1, "start": 0, "end": 120},
+                {"index": 2, "start": 117.7, "end": 200.2},
+            ]
             (root / "transcripts" / "0001.txt").write_text(
                 "질문이 있습니다.\n", encoding="utf-8"
             )
             (root / "transcripts" / "0002.txt").write_text(
                 "네, 말씀하세요.\n", encoding="utf-8"
             )
+            text, languages = assemble_transcript(root, chunks)
             self.assertEqual(
-                plain_transcript(root), "질문이 있습니다.\n\n네, 말씀하세요.\n"
+                text,
+                "[00:00:00–00:02:00]\n질문이 있습니다.\n\n"
+                "[00:01:57–00:03:21]\n네, 말씀하세요.\n",
             )
+            self.assertEqual(languages, ())
 
     def test_one_final_text_and_no_intermediates_after_success(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -245,9 +269,14 @@ class PipelineTests(unittest.TestCase):
                     result = transcribe(str(audio))
                     self.assertEqual(result["status"], "created")
                     self.assertEqual(result["transcript"], str((location / "recording.txt").resolve()))
+                    transcript = (location / "recording.txt").read_text(encoding="utf-8")
                     self.assertEqual(
-                        (location / "recording.txt").read_text(),
-                        stamp_transcript("테스트 전사문\n", hashlib.sha256(b"do-not-edit-source").hexdigest()),
+                        strip_transcript_footer(transcript).strip(),
+                        "[00:00:00–00:00:10]\n테스트 전사문",
+                    )
+                    self.assertEqual(
+                        source_fingerprint(transcript),
+                        hashlib.sha256(b"do-not-edit-source").hexdigest(),
                     )
                     self.assertEqual(audio.read_bytes(), b"do-not-edit-source")
                     self.assertEqual(cache_stats(cache)["jobs"], 0)
