@@ -7,7 +7,6 @@ set -euo pipefail
 : "${GCP_PROJECT:?Set GCP_PROJECT before deploying}"
 REGION="${SCRIBEFLOW_REGION:-asia-northeast3}"
 JOB=scribeflow-transcribe
-REPO=scribeflow
 
 command -v git >/dev/null
 command -v gcloud >/dev/null
@@ -24,11 +23,7 @@ fi
 gcloud run jobs describe "$JOB" --project="$GCP_PROJECT" \
   --region="$REGION" >/dev/null
 
-COMMIT="$(git rev-parse --short=12 HEAD)"
-IMAGE="${REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO}/scribeflow:${COMMIT}"
-
-echo "Building transcription worker image for commit ${COMMIT}"
-gcloud builds submit . --tag "$IMAGE" --project="$GCP_PROJECT"
+IMAGE="${SCRIBEFLOW_IMAGE:-ghcr.io/ljy0317/scribeflow:sha-$(git rev-parse HEAD)}"
 
 echo "Updating only Cloud Run Job ${JOB}"
 gcloud run jobs update "$JOB" --image "$IMAGE" \

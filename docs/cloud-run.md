@@ -91,7 +91,9 @@ bash scripts/deploy-cloud-run.sh
 bash scripts/enable-mcp-access.sh
 ```
 
-첫 번째 스크립트는 필요한 Google Cloud API, 앱 전용 서비스 계정, `scribeflow-oauth` Firestore 데이터베이스, 이미지 저장소를 만들고 **비공개 상태**로 Cloud Run MCP 서버와 전사 Job을 배포합니다. 두 번째 스크립트는 익명 MCP 도구 요청에 **401**, OAuth 메타데이터에 **200**이 반환되는지 확인한 다음 외부 연결을 활성화합니다. `*.a.run.app`과 위 고정 주소가 달라도 Cloud Run의 주소 별칭이므로 **ChatGPT와 Google OAuth에는 반드시 위 고정 주소를 사용**합니다.
+첫 번째 스크립트는 필요한 Google Cloud API, 앱 전용 서비스 계정, `scribeflow-oauth` Firestore 데이터베이스를 설정하고 **비공개 상태**로 Cloud Run MCP 서버와 전사 Job을 배포합니다. 두 번째 스크립트는 익명 MCP 도구 요청에 **401**, OAuth 메타데이터에 **200**이 반환되는지 확인한 다음 외부 연결을 활성화합니다. `*.a.run.app`과 위 고정 주소가 달라도 Cloud Run의 주소 별칭이므로 **ChatGPT와 Google OAuth에는 위 고정 주소를 사용**합니다.
+
+`main`에 푸시하면 GitHub Actions가 테스트를 통과한 이미지를 GitHub Container Registry에 `sha-<전체 커밋 SHA>` 태그로 게시합니다. 배포 스크립트는 현재 커밋의 공개 이미지를 사용합니다. 포크의 이미지나 정확한 이미지 다이제스트를 지정하려면 `SCRIBEFLOW_IMAGE`를 설정합니다. 처음 게시한 패키지는 기본적으로 비공개이므로 공개 배포를 하려면 GitHub **Packages → 패키지 설정 → 공개 범위**에서 Public으로 설정합니다. 실행 시 필요한 자격증명은 Secret Manager에서 주입합니다. [GitHub 패키지 공개 범위](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
 
 ChatGPT의 **Plugins → 사용자 지정 MCP 서버 추가**(UI 명칭은 변경 가능)에서 다음과 같이 설정합니다.
 
@@ -146,7 +148,7 @@ bash scripts/preflight-cloud-run.sh
 
 사전 점검은 **현재 클라우드 설정에 접근 가능한 계정에서만** 실행할 수 있습니다. 비밀값이나 출력 전체를 공개 저장소·채팅에 붙여넣지 마세요. 실패하면 오류를 확인한 다음 배포를 중단하세요. 이미 진행 중인 전사 Job이 있다면 완료된 후 배포를 진행해야 합니다.
 
-사전 점검에 통과했다면 **5단계의 두 배포 스크립트**를 재실행합니다. 기존 Google OAuth 클라이언트·OpenAI 키·Drive 인증을 재사용합니다. 새 Cloud Shell 세션에서는 `export` 환경변수를 다시 설정해야 하지만 Secret Manager의 비밀값은 유지됩니다. Cloud Build 이미지 빌드와 Cloud Run 업데이트는 소액의 Google Cloud 비용이 발생할 수 있습니다. 배포 자체는 OpenAI 전사 API를 호출하지 않습니다.
+사전 점검에 통과했다면 **5단계의 두 배포 스크립트**를 재실행합니다. 기존 Google OAuth 클라이언트·OpenAI 키·Drive 인증을 재사용합니다. 실행 중인 서비스의 이미지 주소만 바꿀 때는 Cloud Run의 Job과 서비스에 `gcloud run jobs update --image`와 `gcloud run services update --image`를 각각 사용하면 기존 URL과 접근 설정을 유지합니다. 배포 자체는 OpenAI 전사 API를 호출하지 않습니다.
 
 **배포 후 확인:** `bash scripts/audit-cloud-storage.sh`로 현재 서비스와 Job의 배포 이미지·이전 이미지, 이미지 정리 정책, Logging 보관 상태를 읽기 전용으로 확인합니다. `gcloud firestore fields ttls list --collection-group=scribeflow_job_claims --database=scribeflow-oauth --project="$GCP_PROJECT"`로 예약 기록의 TTL 활성화 여부를 검사합니다. TTL이 미설정일 때만 관리자가 `bash scripts/configure-claim-ttl.sh`를 선택적으로 실행할 수 있습니다. Artifact Registry의 자동 삭제 정책은 실행 중인 이미지 다이제스트와 롤백 버전을 확인하기 전에는 **활성화하지 않습니다.**
 
@@ -164,12 +166,14 @@ export GCP_PROJECT='YOUR_EXISTING_PROJECT_ID'
 bash scripts/deploy-worker-only.sh
 ```
 
-Cloud Build와 Cloud Run Job 업데이트에 비용이 발생할 수 있지만, 명령 자체는 새로운 전사를 실행하지 않습니다. 되돌릴 때는 이전 정상 이미지로 `gcloud run jobs update scribeflow-transcribe --image=PREVIOUS_IMAGE --project="$GCP_PROJECT" --region=asia-northeast3`를 실행할 수 있습니다.
+이 명령은 GitHub에서 이미 빌드된 이미지를 배포합니다. 되돌릴 때는 이전 정상 이미지로 `gcloud run jobs update scribeflow-transcribe --image=PREVIOUS_IMAGE --project="$GCP_PROJECT" --region=asia-northeast3`를 실행할 수 있습니다.
 
 **주의:** 원격 전문용어 힌트와 중복 실행 방지처럼 MCP Gateway의 도구 정의도 바뀐 릴리스는 이 스크립트만으로 적용할 수 없습니다. 처음 적용할 때는 위의 `scripts/deploy-cloud-run.sh`와 `scripts/enable-mcp-access.sh` 전체 절차가 필요합니다.
 
 ### 전사 산출물·Cloud 비용 점검
 
+- **다른 리전 시험:** 기존 ChatGPT 연결을 유지하려면 별도 Cloud Run Job을 대상 리전에 만들고, 기존 전사 작업과 같은 이미지·실행 계정·Secret Manager 참조를 사용합니다. 짧은 합성 음성의 Drive ID로 시험 작업을 한 번 실행하고, TXT 생성과 작업 로그를 확인합니다. 미국 OpenAI 주소를 시험하려면 해당 API 프로젝트에서 사용 가능한지 확인한 뒤 시험 Job의 `OPENAI_BASE_URL`에 `https://us.api.openai.com/v1`을 설정합니다. 기존 Gateway를 전환하기 전에 결제 보고서에서 결과를 확인합니다.
+- **무료 체험과 비용 비교:** Google Cloud 결제 **보고서 → 그룹화 기준 SKU → 절감액**에서 프로모션 크레딧을 제외하고 시험 날짜의 Cloud Run 인터넷 전송료와 컴퓨팅 소계를 확인합니다. 월별 무료 할당량은 계속 적용됩니다. 새 SKU가 보고서에 반영되기 전까지 ₩0은 판정할 수 없습니다. 체험이 끝나면 유료 계정으로 전환하지 않은 프로젝트의 실행이 중지됩니다. [Cloud Run 요금](https://cloud.google.com/run/pricing), [Cloud Billing 보고서](https://docs.cloud.google.com/billing/docs/how-to/reports)
 - **사용자 Google Drive:** 최종 산출물은 원본 음성과 같은 폴더의 TXT **한 개**입니다. Cloud Run 작업용 원본 복사본, 무재인코딩 오디오 조각, 구간별 전사·감지 언어 캐시 및 manifest는 정상 완료 후 삭제를 시도합니다. Cloud Run Job이 종료되면 임시 파일시스템도 사라집니다. 전사 결과가 모두 비어 있으면 TXT를 생성하지 않고 실패 상태로 알립니다.
 - **작업 예약 Firestore:** 실제 오디오는 저장하지 않습니다. 파일 ID 해시·Cloud Run 작업 ID·시각 정도의 메타데이터만 남기며, 7일 만료 필드는 TTL 기능을 실제 활성화해야 삭제됩니다. 동일 파일에 대한 중복 과금 방지와 메타데이터 최소 보관 사이의 절충입니다.
 - **Docker 이미지:** Cloud Build로 배포할 때 Artifact Registry에 이전 버전이 축적될 수 있습니다. 현재 실행 중인 Cloud Run Job과 MCP Gateway의 이미지 및 되돌리기에 필요한 이미지는 보존해야 합니다.

@@ -7,7 +7,6 @@ set -euo pipefail
 REGION="${SCRIBEFLOW_REGION:-asia-northeast3}"
 JOB=scribeflow-transcribe
 SERVICE=scribeflow-mcp
-REPO=scribeflow
 OPENAI_SECRET="${SCRIBEFLOW_OPENAI_SECRET:-scribeflow-openai-api-key}"
 RCLONE_SECRET="${SCRIBEFLOW_RCLONE_SECRET:-scribeflow-rclone-config}"
 
@@ -78,14 +77,12 @@ done
 
 gcloud firestore databases describe --database=scribeflow-oauth \
   --project="$GCP_PROJECT" >/dev/null
-gcloud artifacts repositories describe "$REPO" \
-  --project="$GCP_PROJECT" --location="$REGION" >/dev/null
 for secret in "$OPENAI_SECRET" "$RCLONE_SECRET" \
   scribeflow-google-client-secret scribeflow-oauth-seed; do
   gcloud secrets versions describe latest --secret="$secret" \
     --project="$GCP_PROJECT" >/dev/null
 done
-echo "Existing Firestore database, registry and four secrets verified."
+echo "Existing Firestore database and four secrets verified."
 
 echo "Recent transcription executions (review running jobs before deploying):"
 gcloud run jobs executions list --job="$JOB" --limit=5 \

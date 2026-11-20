@@ -53,9 +53,31 @@ jobs:
         run: uv run --extra cloud --python 3.11 python -m unittest discover -s tests -q
       - name: Build distribution
         run: uv build
+  image:
+    needs: unittest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Build Cloud Run image
-        run: docker build --tag scribeflow:ci .
+        run: |
+          docker build --tag scribeflow:ci \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" .
       - name: Smoke test cloud image dependencies
         run: |
           docker run --rm --entrypoint sh scribeflow:ci -c \
             'rclone version && ffmpeg -version | head -n 1 && python -c "import scribeflow.cloud_entry, scribeflow.cloud_gateway, scribeflow.cloud_worker; print(\"Cloud modules import OK\")"'
+      - name: Publish tested image to GitHub Container Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:sha-$GITHUB_SHA"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker tag scribeflow:ci "$image"
+          docker push "$image"

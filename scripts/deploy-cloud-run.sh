@@ -12,7 +12,7 @@ done
 REGION="${SCRIBEFLOW_REGION:-asia-northeast3}"
 JOB=scribeflow-transcribe
 SERVICE=scribeflow-mcp
-REPO=scribeflow
+IMAGE="${SCRIBEFLOW_IMAGE:-ghcr.io/ljy0317/scribeflow:sha-$(git rev-parse HEAD)}"
 OPENAI_SECRET="${SCRIBEFLOW_OPENAI_SECRET:-scribeflow-openai-api-key}"
 RCLONE_SECRET="${SCRIBEFLOW_RCLONE_SECRET:-scribeflow-rclone-config}"
 GOOGLE_SECRET=scribeflow-google-client-secret
@@ -25,8 +25,7 @@ PROJECT_NUMBER="$(gcloud projects describe "$GCP_PROJECT" --format='value(projec
 URL="https://${SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
 
 gcloud config set project "$GCP_PROJECT"
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
-  artifactregistry.googleapis.com secretmanager.googleapis.com \
+gcloud services enable run.googleapis.com secretmanager.googleapis.com \
   firestore.googleapis.com --project "$GCP_PROJECT"
 
 for name in "$OPENAI_SECRET" "$RCLONE_SECRET" "$GOOGLE_SECRET"; do
@@ -64,14 +63,6 @@ if ! gcloud firestore databases describe --database=scribeflow-oauth \
 fi
 gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --member="serviceAccount:$GATEWAY_SA" --role=roles/datastore.user >/dev/null
-
-if ! gcloud artifacts repositories describe "$REPO" --location "$REGION" \
-  --project "$GCP_PROJECT" >/dev/null 2>&1; then
-  gcloud artifacts repositories create "$REPO" --repository-format=docker \
-    --location "$REGION" --project "$GCP_PROJECT"
-fi
-IMAGE="${REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO}/scribeflow:$(git rev-parse --short HEAD)"
-gcloud builds submit . --tag "$IMAGE" --project "$GCP_PROJECT"
 
 gcloud run jobs deploy "$JOB" --image "$IMAGE" --project "$GCP_PROJECT" \
   --region "$REGION" --service-account "$WORKER_SA" \
