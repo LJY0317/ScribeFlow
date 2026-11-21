@@ -10,6 +10,7 @@ for name in GCP_PROJECT SCRIBEFLOW_GOOGLE_CLIENT_ID SCRIBEFLOW_GOOGLE_EMAIL; do
   fi
 done
 REGION="${SCRIBEFLOW_REGION:-asia-northeast3}"
+WORKER_REGION="${SCRIBEFLOW_WORKER_REGION:-$REGION}"
 JOB=scribeflow-transcribe
 SERVICE=scribeflow-mcp
 IMAGE="${SCRIBEFLOW_IMAGE:-ghcr.io/ljy0317/scribeflow:sha-$(git rev-parse HEAD)}"
@@ -64,15 +65,19 @@ fi
 gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --member="serviceAccount:$GATEWAY_SA" --role=roles/datastore.user >/dev/null
 
+worker_env="SCRIBEFLOW_CLOUD_MODE=worker,SCRIBEFLOW_RCLONE_CONFIG_SECRET=/secrets/rclone.conf,SCRIBEFLOW_TRANSCRIPTION_MODEL=${SCRIBEFLOW_TRANSCRIPTION_MODEL:-gpt-transcribe}"
+if [[ -n "${OPENAI_BASE_URL:-}" ]]; then
+  worker_env+=",OPENAI_BASE_URL=${OPENAI_BASE_URL}"
+fi
 gcloud run jobs deploy "$JOB" --image "$IMAGE" --project "$GCP_PROJECT" \
-  --region "$REGION" --service-account "$WORKER_SA" \
+  --region "$WORKER_REGION" --service-account "$WORKER_SA" \
   --tasks 1 --parallelism 1 --max-retries 0 --task-timeout 3600s \
   --cpu 1 --memory 2Gi \
-  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=worker,SCRIBEFLOW_RCLONE_CONFIG_SECRET=/secrets/rclone.conf,SCRIBEFLOW_TRANSCRIPTION_MODEL=${SCRIBEFLOW_TRANSCRIPTION_MODEL:-gpt-transcribe}" \
+  --set-env-vars="$worker_env" \
   --set-secrets="/secrets/rclone.conf=${RCLONE_SECRET}:latest,OPENAI_API_KEY=${OPENAI_SECRET}:latest"
 
 gcloud run jobs add-iam-policy-binding "$JOB" --project "$GCP_PROJECT" \
-  --region "$REGION" --member="serviceAccount:$GATEWAY_SA" \
+  --region "$WORKER_REGION" --member="serviceAccount:$GATEWAY_SA" \
   --role=roles/run.jobsExecutorWithOverrides >/dev/null
 gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --member="serviceAccount:$GATEWAY_SA" --role=roles/run.viewer >/dev/null
@@ -85,7 +90,7 @@ gcloud run deploy "$SERVICE" --image "$IMAGE" --project "$GCP_PROJECT" \
   --region "$REGION" --service-account "$GATEWAY_SA" \
   --cpu 1 --memory 512Mi --min-instances 0 --max-instances 1 \
   --no-allow-unauthenticated \
-  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=gateway,GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},SCRIBEFLOW_REGION=${REGION},SCRIBEFLOW_JOB=${JOB},SCRIBEFLOW_MCP_URL=${URL},SCRIBEFLOW_GOOGLE_CLIENT_ID=${SCRIBEFLOW_GOOGLE_CLIENT_ID},SCRIBEFLOW_GOOGLE_EMAIL=${SCRIBEFLOW_GOOGLE_EMAIL}" \
+  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=gateway,GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},SCRIBEFLOW_REGION=${WORKER_REGION},SCRIBEFLOW_PREVIOUS_WORKER_REGION=${SCRIBEFLOW_PREVIOUS_WORKER_REGION:-},SCRIBEFLOW_JOB=${JOB},SCRIBEFLOW_MCP_URL=${URL},SCRIBEFLOW_GOOGLE_CLIENT_ID=${SCRIBEFLOW_GOOGLE_CLIENT_ID},SCRIBEFLOW_GOOGLE_EMAIL=${SCRIBEFLOW_GOOGLE_EMAIL}" \
   --set-secrets="SCRIBEFLOW_GOOGLE_CLIENT_SECRET=${GOOGLE_SECRET}:latest,SCRIBEFLOW_OAUTH_SEED=${SEED_SECRET}:latest"
 
 # Cloud Run may return its hash-based alias from status.url, even when the

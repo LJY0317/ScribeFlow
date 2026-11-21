@@ -5,7 +5,7 @@
 set -euo pipefail
 
 : "${GCP_PROJECT:?Set GCP_PROJECT before deploying}"
-REGION="${SCRIBEFLOW_REGION:-asia-northeast3}"
+REGION="${SCRIBEFLOW_WORKER_REGION:-${SCRIBEFLOW_REGION:-asia-northeast3}}"
 JOB=scribeflow-transcribe
 
 command -v git >/dev/null

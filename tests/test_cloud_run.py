@@ -112,6 +112,24 @@ class CloudRunTests(unittest.TestCase):
         self.session.request.return_value = self._response({"done": True, "error": {"code": 13}})
         self.assertEqual(self.api.status(operation)["status"], "failed")
 
+    def test_migrated_worker_submits_in_new_region_and_reads_old_execution(self):
+        old = self.target
+        new = CloudRunTarget(old.project, "us-central1", old.job)
+        api = CloudRunJobs(new, session=self.session, previous_region=old.region)
+        previous_operation = old.operation_prefix + "previous"
+        previous_execution = old.resource + "/executions/previous"
+        self.session.request.side_effect = [
+            self._response({"name": new.operation_prefix + "current"}),
+            self._response({"done": True, "response": {"name": previous_execution}}),
+            self._response({"succeededCount": 1, "completionTime": "2026-11-21T00:00:00Z"}),
+        ]
+
+        self.assertEqual(api.start("testfile_" + "a" * 22)["operation"],
+                         new.operation_prefix + "current")
+        self.assertTrue(self.session.request.call_args.args[1].endswith(new.resource + ":run"))
+        self.assertEqual(api.status(previous_operation)["status"], "completed")
+        self.assertTrue(self.session.request.call_args.args[1].endswith(previous_execution))
+
 
 if __name__ == "__main__":
     unittest.main()

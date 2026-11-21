@@ -173,6 +173,7 @@ bash scripts/deploy-worker-only.sh
 ### 전사 산출물·Cloud 비용 점검
 
 - **다른 리전 시험:** 기존 ChatGPT 연결을 유지하려면 별도 Cloud Run Job을 대상 리전에 만들고, 기존 전사 작업과 같은 이미지·실행 계정·Secret Manager 참조를 사용합니다. 짧은 합성 음성의 Drive ID로 시험 작업을 한 번 실행하고, TXT 생성과 작업 로그를 확인합니다. 미국 OpenAI 주소를 시험하려면 해당 API 프로젝트에서 사용 가능한지 확인한 뒤 시험 Job의 `OPENAI_BASE_URL`에 `https://us.api.openai.com/v1`을 설정합니다. 기존 Gateway를 전환하기 전에 결제 보고서에서 결과를 확인합니다.
+- **전사 Job 리전 전환:** 배포 스크립트에서 `SCRIBEFLOW_REGION`은 기존 Gateway 리전, `SCRIBEFLOW_WORKER_REGION`은 새 전사 Job 리전으로 지정합니다. 새 리전에도 기존 Job과 같은 이름을 쓰고 Gateway 서비스 계정에 실행 권한을 부여합니다. 기존 Job의 상태 조회를 지원하려면 `SCRIBEFLOW_PREVIOUS_WORKER_REGION`에 이전 Job 리전을 지정하고 이전 Job을 보존합니다. 기존 Gateway만 업데이트할 때는 Gateway의 `SCRIBEFLOW_REGION` 환경변수를 새 **Job 리전**으로 지정하면 OAuth와 ChatGPT 연결 주소를 유지할 수 있습니다. 지역별 OpenAI 주소를 사용하는 경우 전사 Job에 `OPENAI_BASE_URL`도 설정합니다.
 - **무료 체험과 비용 비교:** Google Cloud 결제 **보고서 → 그룹화 기준 SKU → 절감액**에서 프로모션 크레딧을 제외하고 시험 날짜의 Cloud Run 인터넷 전송료와 컴퓨팅 소계를 확인합니다. 월별 무료 할당량은 계속 적용됩니다. 새 SKU가 보고서에 반영되기 전까지 ₩0은 판정할 수 없습니다. 체험이 끝나면 유료 계정으로 전환하지 않은 프로젝트의 실행이 중지됩니다. [Cloud Run 요금](https://cloud.google.com/run/pricing), [Cloud Billing 보고서](https://docs.cloud.google.com/billing/docs/how-to/reports)
 - **사용자 Google Drive:** 최종 산출물은 원본 음성과 같은 폴더의 TXT **한 개**입니다. Cloud Run 작업용 원본 복사본, 무재인코딩 오디오 조각, 구간별 전사·감지 언어 캐시 및 manifest는 정상 완료 후 삭제를 시도합니다. Cloud Run Job이 종료되면 임시 파일시스템도 사라집니다. 전사 결과가 모두 비어 있으면 TXT를 생성하지 않고 실패 상태로 알립니다.
 - **작업 예약 Firestore:** 실제 오디오는 저장하지 않습니다. 파일 ID 해시·Cloud Run 작업 ID·시각 정도의 메타데이터만 남기며, 7일 만료 필드는 TTL 기능을 실제 활성화해야 삭제됩니다. 동일 파일에 대한 중복 과금 방지와 메타데이터 최소 보관 사이의 절충입니다.

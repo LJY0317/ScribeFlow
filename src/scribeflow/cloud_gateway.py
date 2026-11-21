@@ -71,11 +71,14 @@ def create_server():
         client_storage=store,
         require_authorization_consent=True,
     )
-    jobs = CloudRunJobs(CloudRunTarget(
-        project=os.environ["GOOGLE_CLOUD_PROJECT"],
-        region=os.environ.get("SCRIBEFLOW_REGION", "asia-northeast3"),
-        job=os.environ.get("SCRIBEFLOW_JOB", "scribeflow-transcribe"),
-    ))
+    jobs = CloudRunJobs(
+        CloudRunTarget(
+            project=os.environ["GOOGLE_CLOUD_PROJECT"],
+            region=os.environ.get("SCRIBEFLOW_REGION", "asia-northeast3"),
+            job=os.environ.get("SCRIBEFLOW_JOB", "scribeflow-transcribe"),
+        ),
+        previous_region=os.environ.get("SCRIBEFLOW_PREVIOUS_WORKER_REGION"),
+    )
     backend = DeduplicatingCloudRunJobs(
         jobs, FirestoreJobClaims(os.environ["GOOGLE_CLOUD_PROJECT"], jobs.session),
     )

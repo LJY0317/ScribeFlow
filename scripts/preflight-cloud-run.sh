@@ -5,6 +5,7 @@ set -euo pipefail
 
 : "${GCP_PROJECT:?Set GCP_PROJECT to the existing Cloud project ID}"
 REGION="${SCRIBEFLOW_REGION:-asia-northeast3}"
+WORKER_REGION="${SCRIBEFLOW_WORKER_REGION:-$REGION}"
 JOB=scribeflow-transcribe
 SERVICE=scribeflow-mcp
 OPENAI_SECRET="${SCRIBEFLOW_OPENAI_SECRET:-scribeflow-openai-api-key}"
@@ -53,9 +54,13 @@ done
 # Only show image references, never full service JSON (which can contain envs).
 for kind in services jobs; do
   resource="$SERVICE"
-  if [[ "$kind" == jobs ]]; then resource="$JOB"; fi
+  location="$REGION"
+  if [[ "$kind" == jobs ]]; then
+    resource="$JOB"
+    location="$WORKER_REGION"
+  fi
   gcloud run "$kind" describe "$resource" \
-    --project="$GCP_PROJECT" --region="$REGION" --format=json |
+    --project="$GCP_PROJECT" --region="$location" --format=json |
     python3 -c 'import json,sys
 data=json.load(sys.stdin)
 images=set()
@@ -86,7 +91,7 @@ echo "Existing Firestore database and four secrets verified."
 
 echo "Recent transcription executions (review running jobs before deploying):"
 gcloud run jobs executions list --job="$JOB" --limit=5 \
-  --project="$GCP_PROJECT" --region="$REGION"
+  --project="$GCP_PROJECT" --region="$WORKER_REGION"
 
 echo "READ-ONLY PREFLIGHT PASSED. No cloud resources were changed."
 echo "Run the existing full deployment scripts only when ready:"
