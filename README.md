@@ -1,6 +1,6 @@
 # ScribeFlow
 
-[MIT License](LICENSE) · [원격 설치 및 완전 제거](docs/cloud-run.md)
+[MIT License](LICENSE) · [원격 설치 및 완전 제거](docs/cloud-run.md) · [저비용 클라우드 운영](docs/cloud-run.md#저비용-운영-구성)
 
 다양한 언어의 긴 녹음을 OpenAI `gpt-transcribe` 모델로 전사하는 오픈소스 프로젝트입니다. **로컬 CLI** 또는 **Google Cloud Run에 배포한 개인용 ChatGPT MCP 서버**로 사용할 수 있습니다. 최종 산출물은 원본 오디오 옆에 저장되는 같은 이름의 `.txt` 파일 하나입니다. 전사문 끝에는 원본과 전사 작업의 정보를 기록합니다.
 

@@ -126,11 +126,11 @@ bash scripts/disable-claim-ttl.sh
 
 7일 지난 예약이 정리되면 동일 파일 ID의 새 요청도 Cloud Run 작업 하나를 생성할 수 있습니다. 일반 전사 요청은 기존 TXT를 보호합니다. 이전 작업의 상태 조회가 불가능할 때에는 최소 2시간 후에 명시적 재시도 또는 재전사가 가능합니다.
 
-ID는 `https://drive.google.com/file/d/FILE_ID/view`에서 확인합니다. **ScribeFlow MCP 자체는 Google Drive 파일명 검색 도구가 없으므로** ChatGPT가 “SSAFY 폴더의 녹음”만으로 찾으려면 별도 Google Drive 연결이나 파일 링크가 필요합니다. 이미 동명 TXT가 있으면 SHA-256 일치 시 `skipped_existing`, 미확인·불일치 시에도 덮어쓰지 않습니다.
+ID는 `https://drive.google.com/file/d/FILE_ID/view`에서 확인합니다. **ScribeFlow MCP 자체는 Google Drive 파일명 검색 도구가 없으므로** ChatGPT가 폴더명이나 파일명으로 찾으려면 별도 Google Drive 연결이나 파일 링크가 필요합니다. 이미 동명 TXT가 있으면 SHA-256 일치 시 `skipped_existing`, 미확인·불일치 시에도 덮어쓰지 않습니다.
 
 **실전 검증 방법:** 원본 음성만 있고 동명 TXT가 없는 파일로 전사 요청 → `completed` 확인 → 원본 Drive 폴더의 **새 TXT 파일 ID·생성시각·본문** 확인. 기존 TXT를 시험 삼아 제거한다면 **휴지통으로 이동**해 복구 가능한 상태로 두세요. 실제 API 호출은 비용이 발생합니다.
 
-**검증 사실(2026-11-13):** 공유받은 Drive 폴더의 M4A 약 0.84MB와 일반 Drive의 SSAFY M4A 약 68MB에서 기존 TXT를 휴지통으로 옮긴 뒤 새 TXT가 생성됐습니다. Linux CI의 Python 테스트 및 Docker 빌드도 통과했습니다. Windows 로컬 CLI 및 각 모바일 ChatGPT 앱은 별도 실기 검증 전입니다.
+**검증 사실(2026-11-13):** 공유받은 Drive 폴더의 M4A 약 0.84MB와 일반 Drive의 M4A 약 68MB에서 기존 TXT를 휴지통으로 옮긴 뒤 새 TXT가 생성됐습니다. Linux CI의 Python 테스트 및 Docker 빌드도 통과했습니다. Windows 로컬 CLI 및 각 모바일 ChatGPT 앱은 별도 실기 검증 전입니다.
 
 **기존 배포 업데이트:** `git switch main && git pull --ff-only`로 갱신한 뒤 아래 **읽기 전용 사전 점검**을 먼저 실행합니다. 이미 사용 중인 GCP 프로젝트, 구독 결제 상태, Cloud Run Job/MCP의 현재 이미지 참조, Firestore DB, Secret Manager의 활성 비밀, 최근 실행 내역을 확인합니다. 해당 명령은 서비스·비밀을 변경하거나 음성을 전사하지 않습니다.
 
@@ -139,6 +139,8 @@ cd ~/ScribeFlow
 git switch main
 git pull --ff-only
 export GCP_PROJECT='YOUR_EXISTING_PROJECT_ID'
+# Gateway와 Job이 다른 리전이면 기존 운영 Job의 리전을 지정합니다.
+# export SCRIBEFLOW_WORKER_REGION=us-central1
 
 # 기존 Google OAuth Client ID / 로그인 이메일도 비공개 설정에서 복원
 # export SCRIBEFLOW_GOOGLE_CLIENT_ID='...'
@@ -150,7 +152,7 @@ bash scripts/preflight-cloud-run.sh
 
 사전 점검에 통과했다면 **5단계의 두 배포 스크립트**를 재실행합니다. 기존 Google OAuth 클라이언트·OpenAI 키·Drive 인증을 재사용합니다. 실행 중인 서비스의 이미지 주소만 바꿀 때는 Cloud Run의 Job과 서비스에 `gcloud run jobs update --image`와 `gcloud run services update --image`를 각각 사용하면 기존 URL과 접근 설정을 유지합니다. 배포 자체는 OpenAI 전사 API를 호출하지 않습니다.
 
-**배포 후 확인:** `bash scripts/audit-cloud-storage.sh`로 현재 서비스와 Job의 배포 이미지·이전 이미지, 이미지 정리 정책, Logging 보관 상태를 읽기 전용으로 확인합니다. Artifact Registry의 자동 삭제 정책을 사용한다면 실행 중인 이미지 다이제스트와 롤백 버전을 먼저 확인합니다.
+**배포 후 확인:** 아래 [저비용 운영 구성](#저비용-운영-구성)의 읽기 전용 명령으로 활성 리전, 저장소, 버킷, TTL을 확인합니다. Gateway와 Job이 같은 리전에 있고 자체 Artifact Registry를 쓰는 배포에서는 `bash scripts/audit-cloud-storage.sh`로 이미지와 로그 보관 상태도 확인할 수 있습니다.
 
 **기능 검증:** `scripts/enable-mcp-access.sh`는 익명 MCP 요청의 401과 OAuth 메타데이터의 200을 확인합니다. 이는 유료 전사 API를 호출하지 않습니다. Google Drive의 실제 음성 한 건을 전사하는 품질 검증은 별도 API 사용료가 발생하므로, 최종 TXT가 없는 테스트 녹음과 정확한 기준문을 준비한 경우에만 실행합니다. 기존 녹음·TXT는 삭제하지 않고, 이미 TXT가 있는 파일은 기본적으로 건너뜁니다.
 
@@ -163,21 +165,39 @@ cd ~/ScribeFlow
 git switch main
 git pull --ff-only
 export GCP_PROJECT='YOUR_EXISTING_PROJECT_ID'
+export SCRIBEFLOW_WORKER_REGION=us-central1  # 아이오와 운영 Job 예시
 bash scripts/deploy-worker-only.sh
 ```
 
-이 명령은 GitHub에서 이미 빌드된 이미지를 배포합니다. 되돌릴 때는 이전 정상 이미지로 `gcloud run jobs update scribeflow-transcribe --image=PREVIOUS_IMAGE --project="$GCP_PROJECT" --region=asia-northeast3`를 실행할 수 있습니다.
+이 명령은 GitHub에서 이미 빌드된 이미지를 배포합니다. `SCRIBEFLOW_WORKER_REGION`은 기존 운영 Job의 리전으로 지정합니다. 되돌릴 때는 GHCR에 남겨 둔 정상 이미지의 태그나 다이제스트를 `SCRIBEFLOW_IMAGE`에 지정해 같은 명령을 실행합니다.
 
 **주의:** 원격 전문용어 힌트와 중복 실행 방지처럼 MCP Gateway의 도구 정의도 바뀐 릴리스는 이 스크립트만으로 적용할 수 없습니다. 처음 적용할 때는 위의 `scripts/deploy-cloud-run.sh`와 `scripts/enable-mcp-access.sh` 전체 절차가 필요합니다.
 
-### 전사 산출물·Cloud 비용 점검
+### 저비용 운영 구성
+
+공개 저장소의 표준 GitHub Actions 러너가 이미지를 빌드하고 GitHub Container Registry(GHCR)에 게시합니다. Cloud Run에는 그 이미지를 직접 배포합니다. 이 경로에는 프로젝트 소유 Artifact Registry나 Cloud Build 스테이징 버킷이 필요 없습니다. 롤백할 이미지는 GHCR에 보관합니다. Google Cloud 소스 빌드 배포나 Artifact Registry에 직접 업로드하는 방식으로 바꾸면 저장 비용이 다시 생길 수 있습니다. [GitHub Actions 요금](https://docs.github.com/en/billing/concepts/product-billing/github-actions) · [GHCR 요금](https://docs.github.com/en/billing/concepts/product-billing/github-packages)
+
+실행 중인 원격 전사에는 로컬 체크아웃이 필요 없습니다. 나중에 배포나 관리를 할 때는 GitHub 저장소를 Cloud Shell에 다시 클론하고 기존 Google Cloud 설정과 Secret Manager 참조를 사용합니다.
+
+서울의 기존 ChatGPT 연결을 유지하면서 전사만 아이오와로 옮기는 경우, Gateway의 리전과 OAuth URL은 유지하고 `SCRIBEFLOW_WORKER_REGION=us-central1`로 배포합니다. 운영 Job은 아이오와의 `scribeflow-transcribe` 하나입니다. 이후 전체 재배포에도 이 리전을 명시합니다. 생략하면 배포 스크립트가 Gateway 리전에 Job을 만들 수 있습니다. 이전 리전으로의 상태 조회가 필요 없고 이전·시험 Job에 실행 중인 작업이 없으면, Gateway에서 `SCRIBEFLOW_PREVIOUS_WORKER_REGION`을 제거한 뒤 그 Job들을 삭제합니다. 기존 Drive 전사문은 별도로 보관됩니다.
+
+구형 Artifact Registry를 정리할 때는 현재 서비스·Job과 롤백 이미지가 GHCR에 있는지 먼저 확인합니다. Artifact Registry의 이미지 버전 목록이 비어 있어도 구성 파일과 저장 용량이 남을 수 있습니다. 구형 저장소에 보존할 것이 없다면 저장소를 삭제하고, 전용 프로젝트의 아래 점검에서 저장소와 버킷 목록이 비어 있는지 확인합니다. [Artifact Registry 저장소 삭제](https://docs.cloud.google.com/artifact-registry/docs/repositories/delete-repos)
+
+```bash
+export GCP_PROJECT='YOUR_EXISTING_PROJECT_ID'
+gcloud run jobs list --project="$GCP_PROJECT"
+gcloud artifacts repositories list --project="$GCP_PROJECT" --location=all
+gcloud storage buckets list --project="$GCP_PROJECT"
+gcloud firestore fields ttls list --project="$GCP_PROJECT" --database=scribeflow-oauth
+```
+
+비용은 결제 보고서에서 **SKU와 리전**으로 나눠 보고, 무료 할당량 할인은 남겨 둔 채 프로모션 크레딧만 제외해 확인합니다. Cloud Run 실행 시간과 외부 전송량에는 무료 한도가 있으며, ScribeFlow 자체에는 월간 전송 차단 한도가 없습니다. 새 음성을 전사할 때 OpenAI API 사용료는 별도로 발생합니다. Google Cloud 무료 체험은 자동으로 유료 전환되지 않으며, 전환 없이 체험이 끝나면 Cloud Run도 멈춥니다. [Cloud Run 요금](https://cloud.google.com/run/pricing) · [Cloud Billing 보고서](https://docs.cloud.google.com/billing/docs/how-to/reports) · [Google Cloud 무료 체험](https://cloud.google.com/signup-faqs) · [OpenAI API 요금](https://platform.openai.com/pricing)
+
+### 전사 산출물·운영 참고
 
 - **다른 리전 시험:** 기존 ChatGPT 연결을 유지하려면 별도 Cloud Run Job을 대상 리전에 만들고, 기존 전사 작업과 같은 이미지·실행 계정·Secret Manager 참조를 사용합니다. 짧은 합성 음성의 Drive ID로 시험 작업을 한 번 실행하고, TXT 생성과 작업 로그를 확인합니다. 미국 OpenAI 주소를 시험하려면 해당 API 프로젝트에서 사용 가능한지 확인한 뒤 시험 Job의 `OPENAI_BASE_URL`에 `https://us.api.openai.com/v1`을 설정합니다. 기존 Gateway를 전환하기 전에 결제 보고서에서 결과를 확인합니다.
 - **전사 Job 리전 전환:** 배포 스크립트에서 `SCRIBEFLOW_REGION`은 기존 Gateway 리전, `SCRIBEFLOW_WORKER_REGION`은 새 전사 Job 리전으로 지정합니다. 새 리전에도 기존 Job과 같은 이름을 쓰고 Gateway 서비스 계정에 실행 권한을 부여합니다. 기존 Job의 상태 조회를 지원하려면 `SCRIBEFLOW_PREVIOUS_WORKER_REGION`에 이전 Job 리전을 지정하고 이전 Job을 보존합니다. 기존 Gateway만 업데이트할 때는 Gateway의 `SCRIBEFLOW_REGION` 환경변수를 새 **Job 리전**으로 지정하면 OAuth와 ChatGPT 연결 주소를 유지할 수 있습니다. 지역별 OpenAI 주소를 사용하는 경우 전사 Job에 `OPENAI_BASE_URL`도 설정합니다.
-- **무료 체험과 비용 비교:** Google Cloud 결제 **보고서 → 그룹화 기준 SKU → 절감액**에서 프로모션 크레딧을 제외하고 시험 날짜의 Cloud Run 인터넷 전송료와 컴퓨팅 소계를 확인합니다. 월별 무료 할당량은 계속 적용됩니다. 새 SKU가 보고서에 반영되기 전까지 ₩0은 판정할 수 없습니다. 체험이 끝나면 유료 계정으로 전환하지 않은 프로젝트의 실행이 중지됩니다. [Cloud Run 요금](https://cloud.google.com/run/pricing), [Cloud Billing 보고서](https://docs.cloud.google.com/billing/docs/how-to/reports)
 - **사용자 Google Drive:** 최종 산출물은 원본 음성과 같은 폴더의 TXT **한 개**입니다. Cloud Run 작업용 원본 복사본, 무재인코딩 오디오 조각, 구간별 전사·감지 언어 캐시 및 manifest는 정상 완료 후 삭제를 시도합니다. Cloud Run Job이 종료되면 임시 파일시스템도 사라집니다. 전사 결과가 모두 비어 있으면 TXT를 생성하지 않고 실패 상태로 알립니다.
-- **작업 예약 Firestore:** 요청이 있을 때만 만료 예약을 일반 삭제합니다. 삭제량은 날짜별 최대 100개이며, 날짜 기록은 같은 문서 하나를 재사용합니다.
-- **Docker 이미지:** Cloud Build로 배포할 때 Artifact Registry에 이전 버전이 축적될 수 있습니다. 현재 실행 중인 Cloud Run Job과 MCP Gateway의 이미지 및 되돌리기에 필요한 이미지는 보존해야 합니다.
 - **Cloud Logging:** Google Cloud의 기본 `_Default` 로그 버킷 보관기간은 통상 30일입니다. `_Required` 버킷은 400일이며 임의로 단축할 수 없습니다. 로그에는 녹음 원문이나 API 키를 출력하지 않도록 설계했지만, 오류 유형과 작업 메타데이터는 남을 수 있습니다. 기존 보관 정책을 확인하지 않고 변경하지 마세요.
 
 **읽기 전용 점검(아직 아무것도 정리하지 않음):**
@@ -214,6 +234,8 @@ gcloud artifacts repositories set-cleanup-policies scribeflow \
 
 1. **ChatGPT**: Plugins에서 ScribeFlow 연결을 삭제합니다. Google 계정의 [제3자 앱 연결](https://myaccount.google.com/connections)에서도 ScribeFlow 접근 권한을 취소할 수 있습니다.
 2. **Cloud Shell**: 저장소를 다시 클론하거나 기존 `~/ScribeFlow`에서 아래 스크립트를 실행합니다. 먼저 **dry-run으로 제거 대상 목록**을 확인합니다.
+
+   Gateway와 Job의 리전이 다르면, 스크립트는 Gateway 리전의 Job만 찾습니다. 완전 제거 시에는 `gcloud run jobs list --project="$GCP_PROJECT"`에서 전사 Job의 실제 리전을 확인하고, 해당 리전의 Job도 별도로 삭제합니다.
 
    ```bash
    export GCP_PROJECT='YOUR_PROJECT_ID'
