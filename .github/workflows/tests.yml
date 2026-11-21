@@ -33,7 +33,7 @@ jobs:
           ffprobe -version | head -n 1
       - name: Check deployment helper syntax
         run: |
-          bash -n scripts/configure-claim-ttl.sh
+          bash -n scripts/disable-claim-ttl.sh
           bash -n scripts/deploy-worker-only.sh
           bash -n scripts/audit-cloud-storage.sh
           bash -n scripts/preflight-cloud-run.sh

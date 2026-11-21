@@ -116,15 +116,15 @@ ChatGPT의 접근 허용(Allow Access)을 승인하고 **4단계의 Google 계�
 
 **Google Drive 파일 ID 검색:** Cloud Run Worker는 비공개 rclone 설정의 현재 OAuth 액세스 토큰을 이용해 Drive API에서 파일과 상위 폴더의 메타데이터만 읽어 빠르게 경로를 구합니다. rclone이 최종 파일 ID까지 확인한 경우에만 해당 경로를 사용합니다. 공유받은 폴더·폴더 범위 제한·인증 형태 때문에 조회가 불가능하면 기존의 재귀 검색으로 되돌아갑니다. Google Drive 녹음 자체를 사전 다운로드하거나 인증 비밀을 출력하지 않습니다. 지원 확장자는 `.flac`, `.mp3`, `.mp4`, `.mpeg`, `.mpga`, `.m4a`, `.ogg`, `.wav`, `.webm`이며 나머지는 자동 손실 변환하지 않습니다.
 
-**중복 실행 잠금:** 기존 `scribeflow-oauth` Firestore 데이터베이스의 별도 `scribeflow_job_claims` 컬렉션에 원본 Drive 파일 ID의 SHA-256 해시, 시작 시각, Cloud Run 작업 ID만 저장합니다. 녹음·전사문·키워드·인증 비밀은 저장하지 않습니다. 별도의 Firestore 리소스를 만들지 않지만, 소량의 읽기·쓰기·저장 요금이 발생할 수 있습니다. 새로 만든 예약에는 7일 후 만료 시각(`expires_at`)이 저장됩니다. **Firestore의 자동 삭제는 TTL 정책을 별도로 활성화해야 실제 적용됩니다.** 정책 활성화 전에는 예약 기록이 삭제되지 않습니다.
+**중복 실행 잠금:** 기존 `scribeflow-oauth` Firestore 데이터베이스의 `scribeflow_job_claims` 컬렉션에 원본 Drive 파일 ID의 SHA-256 해시, 시작 시각, Cloud Run 작업 ID와 7일 후 만료 시각을 저장합니다. UTC 기준 하루의 첫 전사 요청에서 만료된 예약을 최대 100개 일반 삭제합니다. 이미 다른 요청이 갱신한 예약은 보존합니다. 전사 요청이 없으면 다음 요청까지 정리가 보류됩니다. 녹음·TXT·OAuth 인증 데이터는 이 정리의 대상이 아닙니다. 일반 읽기·쓰기·삭제에는 데이터베이스의 무료 한도가 적용될 수 있습니다. [Firestore 할당량](https://docs.cloud.google.com/firestore/quotas)
 
-**선택적 보관 정책 설정(관리자용):** ScribeFlow를 업데이트한 뒤 Cloud Shell에서 `GCP_PROJECT` 환경변수를 설정하고 아래 명령을 한 번 실행하면, **ScribeFlow 작업 예약 메타데이터만** 만료 후 자동 정리됩니다. 기존 OAuth 토큰, 녹음·TXT, Cloud Run Job은 대상이 아닙니다. Firestore TTL은 즉시 삭제를 보장하지 않으며 삭제 작업에 소액 요금이 발생할 수 있습니다.
+**이전 TTL 설정을 사용한 배포:** 새 Gateway에서 만료 예약 정리가 작동하는 것을 확인한 후, `GCP_PROJECT`를 설정하고 아래 명령으로 기존 유료 TTL 정책을 끕니다. 새 배포에는 별도 TTL 설정이 필요 없습니다.
 
 ```bash
-bash scripts/configure-claim-ttl.sh
+bash scripts/disable-claim-ttl.sh
 ```
 
-TTL이 적용되어 7일 지난 예약이 사라지면 동일 파일 ID의 새 요청도 Cloud Run 작업 하나를 생성할 수 있습니다. 일반 전사 요청은 기존 TXT를 보호합니다. Cloud Run 실행 자체에 비용이 발생할 수 있습니다. 이전 작업의 상태 조회가 불가능할 때에는 최소 2시간 후에 명시적 재시도 또는 재전사가 가능합니다.
+7일 지난 예약이 정리되면 동일 파일 ID의 새 요청도 Cloud Run 작업 하나를 생성할 수 있습니다. 일반 전사 요청은 기존 TXT를 보호합니다. 이전 작업의 상태 조회가 불가능할 때에는 최소 2시간 후에 명시적 재시도 또는 재전사가 가능합니다.
 
 ID는 `https://drive.google.com/file/d/FILE_ID/view`에서 확인합니다. **ScribeFlow MCP 자체는 Google Drive 파일명 검색 도구가 없으므로** ChatGPT가 “SSAFY 폴더의 녹음”만으로 찾으려면 별도 Google Drive 연결이나 파일 링크가 필요합니다. 이미 동명 TXT가 있으면 SHA-256 일치 시 `skipped_existing`, 미확인·불일치 시에도 덮어쓰지 않습니다.
 
@@ -150,7 +150,7 @@ bash scripts/preflight-cloud-run.sh
 
 사전 점검에 통과했다면 **5단계의 두 배포 스크립트**를 재실행합니다. 기존 Google OAuth 클라이언트·OpenAI 키·Drive 인증을 재사용합니다. 실행 중인 서비스의 이미지 주소만 바꿀 때는 Cloud Run의 Job과 서비스에 `gcloud run jobs update --image`와 `gcloud run services update --image`를 각각 사용하면 기존 URL과 접근 설정을 유지합니다. 배포 자체는 OpenAI 전사 API를 호출하지 않습니다.
 
-**배포 후 확인:** `bash scripts/audit-cloud-storage.sh`로 현재 서비스와 Job의 배포 이미지·이전 이미지, 이미지 정리 정책, Logging 보관 상태를 읽기 전용으로 확인합니다. `gcloud firestore fields ttls list --collection-group=scribeflow_job_claims --database=scribeflow-oauth --project="$GCP_PROJECT"`로 예약 기록의 TTL 활성화 여부를 검사합니다. TTL이 미설정일 때만 관리자가 `bash scripts/configure-claim-ttl.sh`를 선택적으로 실행할 수 있습니다. Artifact Registry의 자동 삭제 정책은 실행 중인 이미지 다이제스트와 롤백 버전을 확인하기 전에는 **활성화하지 않습니다.**
+**배포 후 확인:** `bash scripts/audit-cloud-storage.sh`로 현재 서비스와 Job의 배포 이미지·이전 이미지, 이미지 정리 정책, Logging 보관 상태를 읽기 전용으로 확인합니다. Artifact Registry의 자동 삭제 정책을 사용한다면 실행 중인 이미지 다이제스트와 롤백 버전을 먼저 확인합니다.
 
 **기능 검증:** `scripts/enable-mcp-access.sh`는 익명 MCP 요청의 401과 OAuth 메타데이터의 200을 확인합니다. 이는 유료 전사 API를 호출하지 않습니다. Google Drive의 실제 음성 한 건을 전사하는 품질 검증은 별도 API 사용료가 발생하므로, 최종 TXT가 없는 테스트 녹음과 정확한 기준문을 준비한 경우에만 실행합니다. 기존 녹음·TXT는 삭제하지 않고, 이미 TXT가 있는 파일은 기본적으로 건너뜁니다.
 
@@ -176,7 +176,7 @@ bash scripts/deploy-worker-only.sh
 - **전사 Job 리전 전환:** 배포 스크립트에서 `SCRIBEFLOW_REGION`은 기존 Gateway 리전, `SCRIBEFLOW_WORKER_REGION`은 새 전사 Job 리전으로 지정합니다. 새 리전에도 기존 Job과 같은 이름을 쓰고 Gateway 서비스 계정에 실행 권한을 부여합니다. 기존 Job의 상태 조회를 지원하려면 `SCRIBEFLOW_PREVIOUS_WORKER_REGION`에 이전 Job 리전을 지정하고 이전 Job을 보존합니다. 기존 Gateway만 업데이트할 때는 Gateway의 `SCRIBEFLOW_REGION` 환경변수를 새 **Job 리전**으로 지정하면 OAuth와 ChatGPT 연결 주소를 유지할 수 있습니다. 지역별 OpenAI 주소를 사용하는 경우 전사 Job에 `OPENAI_BASE_URL`도 설정합니다.
 - **무료 체험과 비용 비교:** Google Cloud 결제 **보고서 → 그룹화 기준 SKU → 절감액**에서 프로모션 크레딧을 제외하고 시험 날짜의 Cloud Run 인터넷 전송료와 컴퓨팅 소계를 확인합니다. 월별 무료 할당량은 계속 적용됩니다. 새 SKU가 보고서에 반영되기 전까지 ₩0은 판정할 수 없습니다. 체험이 끝나면 유료 계정으로 전환하지 않은 프로젝트의 실행이 중지됩니다. [Cloud Run 요금](https://cloud.google.com/run/pricing), [Cloud Billing 보고서](https://docs.cloud.google.com/billing/docs/how-to/reports)
 - **사용자 Google Drive:** 최종 산출물은 원본 음성과 같은 폴더의 TXT **한 개**입니다. Cloud Run 작업용 원본 복사본, 무재인코딩 오디오 조각, 구간별 전사·감지 언어 캐시 및 manifest는 정상 완료 후 삭제를 시도합니다. Cloud Run Job이 종료되면 임시 파일시스템도 사라집니다. 전사 결과가 모두 비어 있으면 TXT를 생성하지 않고 실패 상태로 알립니다.
-- **작업 예약 Firestore:** 실제 오디오는 저장하지 않습니다. 파일 ID 해시·Cloud Run 작업 ID·시각 정도의 메타데이터만 남기며, 7일 만료 필드는 TTL 기능을 실제 활성화해야 삭제됩니다. 동일 파일에 대한 중복 과금 방지와 메타데이터 최소 보관 사이의 절충입니다.
+- **작업 예약 Firestore:** 요청이 있을 때만 만료 예약을 일반 삭제합니다. 삭제량은 날짜별 최대 100개이며, 날짜 기록은 같은 문서 하나를 재사용합니다.
 - **Docker 이미지:** Cloud Build로 배포할 때 Artifact Registry에 이전 버전이 축적될 수 있습니다. 현재 실행 중인 Cloud Run Job과 MCP Gateway의 이미지 및 되돌리기에 필요한 이미지는 보존해야 합니다.
 - **Cloud Logging:** Google Cloud의 기본 `_Default` 로그 버킷 보관기간은 통상 30일입니다. `_Required` 버킷은 400일이며 임의로 단축할 수 없습니다. 로그에는 녹음 원문이나 API 키를 출력하지 않도록 설계했지만, 오류 유형과 작업 메타데이터는 남을 수 있습니다. 기존 보관 정책을 확인하지 않고 변경하지 마세요.
 

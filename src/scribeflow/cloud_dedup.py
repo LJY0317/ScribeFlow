@@ -12,6 +12,7 @@ claim/retry races even across distinct Cloud Run gateway instances.
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -19,6 +20,9 @@ from typing import Any
 from .cloud_run import _FILE_ID, CloudRunJobs, normalize_language, normalize_transcription_context
 
 COLLECTION = "scribeflow_job_claims"
+_CLEANUP_MARKER = "cleanup_day"
+_CLEANUP_LIMIT = 100
+logger = logging.getLogger(__name__)
 # A Cloud Run task times out after 1 hour; an unknown submission must not be
 # retried automatically, including after this safety window.
 UNKNOWN_SUBMISSION_RETRY_SECONDS = 2 * 60 * 60
@@ -26,7 +30,7 @@ CLAIM_RETENTION_DAYS = 7
 
 
 def _starting_document(now: int) -> dict:
-    # TTL is deliberately much longer than the Cloud Run task's one-hour limit.
+    # The retention period is much longer than the Cloud Run task's one-hour limit.
     expires = (
         datetime.fromtimestamp(now, tz=timezone.utc)
         + timedelta(days=CLAIM_RETENTION_DAYS)
@@ -49,10 +53,12 @@ class FirestoreJobClaims:
         self, project: str, session: Any, database: str = "scribeflow-oauth",
     ) -> None:
         self.session = session
-        self.collection_url = (
+        self.documents_url = (
             f"https://firestore.googleapis.com/v1/projects/{project}/"
-            f"databases/{database}/documents/{COLLECTION}"
+            f"databases/{database}/documents"
         )
+        self.collection_url = f"{self.documents_url}/{COLLECTION}"
+        self._cleanup_day: str | None = None
 
     def _document_url(self, key: str) -> str:
         return self.collection_url + "/" + key
@@ -103,6 +109,56 @@ class FirestoreJobClaims:
             timeout=20,
         )
         response.raise_for_status()
+
+    def sweep_expired(self, now: int) -> None:
+        """Delete a bounded batch on the first request of each UTC day."""
+        instant = datetime.fromtimestamp(now, tz=timezone.utc)
+        day = instant.date().isoformat()
+        if self._cleanup_day == day:
+            return
+        marker = self.read(_CLEANUP_MARKER)
+        if marker and marker["fields"]["day"]["stringValue"] >= day:
+            self._cleanup_day = day
+            return
+        precondition = (
+            {"currentDocument.updateTime": marker["updateTime"]} if marker
+            else {"currentDocument.exists": "false"}
+        )
+        # Claim the day's sweep before deleting so concurrent instances share the cap.
+        response = self.session.request(
+            "PATCH", self._document_url(_CLEANUP_MARKER), params=precondition,
+            json={"fields": {"day": {"stringValue": day}}}, timeout=20,
+        )
+        if response.status_code in (409, 412):
+            return
+        response.raise_for_status()
+        self._cleanup_day = day
+
+        response = self.session.request(
+            "POST", self.documents_url + ":runQuery", timeout=20,
+            json={"structuredQuery": {
+                "from": [{"collectionId": COLLECTION}],
+                "select": {"fields": [{"fieldPath": "expires_at"}]},
+                "where": {"fieldFilter": {
+                    "field": {"fieldPath": "expires_at"}, "op": "LESS_THAN_OR_EQUAL",
+                    "value": {"timestampValue": instant.isoformat().replace("+00:00", "Z")},
+                }},
+                "limit": _CLEANUP_LIMIT,
+            }},
+        )
+        response.raise_for_status()
+        writes = [
+            {"delete": document["name"], "currentDocument": {"updateTime": document["updateTime"]}}
+            for result in response.json() if (document := result.get("document"))
+        ]
+        if writes:
+            response = self.session.request(
+                "POST", self.documents_url + ":batchWrite", json={"writes": writes}, timeout=20,
+            )
+            response.raise_for_status()
+            # A competing retry can reset a claim between the query and deletion.
+            if any(status.get("code", 0) not in (0, 5, 9) for status in response.json()["status"]):
+                raise RuntimeError("Firestore could not delete one or more expired claims")
 
 
 class DeduplicatingCloudRunJobs:
@@ -156,6 +212,10 @@ class DeduplicatingCloudRunJobs:
         language = normalize_language(language)
         if not isinstance(retry, bool):
             raise ValueError("retry must be a boolean")
+        try:
+            self.claims.sweep_expired(int(self.clock()))
+        except Exception as exc:
+            logger.warning("Expired claim cleanup failed (%s)", type(exc).__name__)
 
         def submit(claim: dict) -> dict:
             return self._submit(key, claim, file_id, normalized, prompt, language, replace_existing)
