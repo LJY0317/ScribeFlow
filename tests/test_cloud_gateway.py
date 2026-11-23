@@ -48,6 +48,7 @@ class CloudGatewayTests(unittest.TestCase):
         self.assertEqual(tools["get_profile"].meta["openai/profile"], True)
         self.assertFalse(tools["transcribe_audio"].annotations.destructiveHint)
         self.assertTrue(tools["retranscribe_audio"].annotations.destructiveHint)
+        self.assertIn("transcript_file_id", tools["retranscribe_audio"].parameters["properties"])
 
     def test_transcribe_tool_exposes_optional_context_fields(self):
         tools = {

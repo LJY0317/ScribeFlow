@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .cache import clean_cache, job_lock, retain_failed_cache
-from .drive_lookup import candidate_from_id, existing_access_token, update_transcript
+from .drive_lookup import candidate_from_id, existing_access_token, read_transcript, update_transcript
 from .engine import (
     SUPPORTED_AUDIO_SUFFIXES,
     clock,
@@ -254,12 +254,21 @@ def remote_exists(destination: str) -> bool:
     return name in listed.splitlines()
 
 
-def _replacement(paths: Paths, requested_id: str | None = None) -> Replacement | None:
+def _replacement(
+    paths: Paths, requested_id: str | None = None, transcript_file_id: str | None = None,
+) -> Replacement | None:
     if not paths.remote:
         target = Path(paths.transcript)
         if not target.is_file():
             return None
         return Replacement(hash_file(Path(paths.source)), hash_file(target))
+
+    if transcript_file_id:
+        source_sha = remote_audio_sha256(paths.source)
+        if not source_sha:
+            raise ValueError("Cannot verify the original Drive audio SHA-256")
+        data = read_transcript(transcript_file_id, _replacement_token())
+        return Replacement(source_sha, hashlib.sha256(data).hexdigest(), transcript_file_id)
 
     parent, _, source_name = paths.source.rpartition("/")
     if not parent:
@@ -516,10 +525,16 @@ def transcribe(
     chunk_seconds: int | None = None,
     overlap_seconds: int = 3,
     replace_existing: bool = False,
+    transcript_file_id: str | None = None,
 ) -> dict:
     """Create exactly one adjacent .txt file; preserve failed jobs for retry."""
     requested_id = _drive_file_id(source) if replace_existing else None
     paths = paths_for(source, output)
+    if transcript_file_id and (
+        not replace_existing or not paths.remote
+        or not re.fullmatch(r"[A-Za-z0-9_-]{10,}", transcript_file_id)
+    ):
+        raise ValueError("A Drive TXT file ID requires remote replacement mode")
     model = configured_model()
     keep_failed = retain_failed_cache()  # Validate the policy before any paid call.
     cache = cache_root()
@@ -529,14 +544,14 @@ def transcribe(
     # Otherwise different keyword/prompt configurations might both incur
     # API costs before one of them notices the destination already exists.
     output_lock_key = hashlib.sha256(
-        ("destination:\n" + paths.transcript).encode("utf-8")
+        ("destination:\n" + (transcript_file_id or paths.transcript)).encode("utf-8")
     ).hexdigest()
     with job_lock(cache, output_lock_key):
         return _transcribe_locked(
             paths, cache, language=language, keywords=keywords, prompt=prompt,
             chunk_seconds=chunk_seconds, overlap_seconds=overlap_seconds,
             keep_failed=keep_failed, model=model, replace_existing=replace_existing,
-            requested_id=requested_id,
+            requested_id=requested_id, transcript_file_id=transcript_file_id,
         )
 
 
@@ -544,14 +559,17 @@ def _transcribe_locked(
     paths: Paths, cache: Path, *, language: str, keywords: tuple[str, ...],
     prompt: str, chunk_seconds: int | None, overlap_seconds: int,
     keep_failed: bool, model: str, replace_existing: bool, requested_id: str | None,
+    transcript_file_id: str | None = None,
 ) -> dict:
     """Destination lock already held; skip existing outputs before transfer."""
     replacement = None
     if replace_existing:
-        replacement = _replacement(paths, requested_id)
+        replacement = _replacement(paths, requested_id, transcript_file_id)
         if replacement is None:
             return {"ok": False, "status": "replacement_missing", "transcript": paths.transcript}
         old = (
+            read_transcript(transcript_file_id, _replacement_token()).decode("utf-8")
+            if transcript_file_id else
             run_rclone("cat", paths.transcript, "--tail", "4096").stdout if paths.remote
             else Path(paths.transcript).read_text(encoding="utf-8")
         )
@@ -637,7 +655,7 @@ def _transcribe_locked(
                 )
                 if replacement and (
                     manifest["source_sha256"] != replacement.source_sha256
-                    or _replacement(paths, requested_id) != replacement
+                    or _replacement(paths, requested_id, transcript_file_id) != replacement
                 ):
                     raise ValueError("전사 중에 원본 음성 또는 기존 TXT가 변경되었습니다.")
                 if replacement and replacement.drive_id:

@@ -170,9 +170,13 @@ def create_server():
             """Check a file's download and output folder permissions without transcribing."""
             return check_file(linked_credential(_require_owner(emails)), file_id)
 
-    def start(file_id, keywords, prompt, retry, language, *, replace_existing=False):
+    def start(file_id, keywords, prompt, retry, language, *, replace_existing=False, transcript_file_id=""):
         token = _require_owner(emails)
         options = {}
+        if transcript_file_id:
+            if not replace_existing or not _FILE_ID.fullmatch(transcript_file_id):
+                raise ValueError("An existing Drive TXT ID is required for explicit replacement")
+            options["transcript_file_id"] = transcript_file_id
         if linked:
             if not _FILE_ID.fullmatch(file_id):
                 raise ValueError("A valid Google Drive file ID is required")
@@ -214,15 +218,20 @@ def create_server():
             "and replace the existing ScribeFlow TXT in place. This incurs OpenAI charges. "
             "Only use when the user explicitly requests replacing that transcription. "
             "Requires an existing TXT whose recorded source SHA-256 matches the audio. "
+            "Set transcript_file_id when the original TXT is in a different Drive folder; "
+            "the existing TXT is updated at its current ID and location. "
             "Use get_transcription_status to follow the returned operation."
         ),
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True),
     )
     def retranscribe_audio(
         file_id: str, keywords: list[str] | None = None, prompt: str = "",
-        language: str = "auto",
+        language: str = "auto", transcript_file_id: str = "",
     ) -> dict:
-        return start(file_id, keywords, prompt, True, language, replace_existing=True)
+        return start(
+            file_id, keywords, prompt, True, language, replace_existing=True,
+            transcript_file_id=transcript_file_id,
+        )
 
     @server.tool(
         description="Check a submitted transcription without restarting it.",

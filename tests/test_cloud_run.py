@@ -35,6 +35,19 @@ class CloudRunTests(unittest.TestCase):
                          {"name": "SCRIBEFLOW_SOURCE_FILE_ID", "value": "testfile_" + "a" * 22})
         self.assertEqual(len(payload["overrides"]["containerOverrides"][0]["env"]), 1)
 
+    def test_explicit_transcript_id_is_scoped_to_replacement(self):
+        self.session.request.return_value = self._response({
+            "name": self.prefix + "1234567890abcdef"
+        })
+        audio_id = "audio_" + "a" * 25
+        transcript_id = "text_" + "b" * 25
+        with self.assertRaises(ValueError):
+            self.api.start(audio_id, transcript_file_id=transcript_id)
+        self.session.request.assert_not_called()
+        self.api.start(audio_id, replace_existing=True, transcript_file_id=transcript_id)
+        env = self.session.request.call_args.kwargs["json"]["overrides"]["containerOverrides"][0]["env"]
+        self.assertIn({"name": "SCRIBEFLOW_TRANSCRIPT_FILE_ID", "value": transcript_id}, env)
+
     def test_optional_hints_are_sent_only_to_the_requested_job(self):
         operation = self.prefix + "1234567890abcdef"
         self.session.request.return_value = self._response({"name": operation})

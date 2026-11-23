@@ -165,6 +165,55 @@ def mocked_engine(source, directory, **kwargs):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_replacement_txt_in_another_drive_folder_by_id(self):
+        audio = b"synthetic recording"
+        sha = hashlib.sha256(audio).hexdigest()
+        existing = stamp_transcript("old words", sha)
+        voice = "gdrive:recordings/recording.mp3"
+        target_id = "different_folder_txt_12345678"
+        audio_id = "audio_different_12345678901"
+        updates = []
+
+        def fake_rclone(command, *args):
+            if command == "lsjson":
+                self.assertEqual(args[0], "gdrive:recordings")
+                return type("R", (), {"stdout": json.dumps([
+                    {"Name": "recording.mp3", "ID": audio_id, "Hashes": {"sha256": sha}}
+                ])})()
+            if command == "copyto":
+                Path(args[1]).write_bytes(audio)
+                return type("R", (), {"stdout": ""})()
+            self.fail(f"Unexpected rclone call {command}")
+
+        def update(file_id, token, data):
+            self.assertEqual((file_id, token), (target_id, "test-token"))
+            updates.append(data)
+            return {"id": target_id, "sha256Checksum": hashlib.sha256(data).hexdigest()}
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("scribeflow.pipeline.cache_root", return_value=Path(directory)),
+            patch("scribeflow.pipeline.resolve_source", return_value=voice),
+            patch("scribeflow.pipeline.run_rclone", side_effect=fake_rclone),
+            patch("scribeflow.pipeline.read_transcript", side_effect=lambda *_: existing.encode()),
+            patch("scribeflow.pipeline._replacement_token", return_value="test-token"),
+            patch("scribeflow.pipeline.transcribe_file", side_effect=mocked_engine) as engine,
+            patch("scribeflow.pipeline.update_transcript", side_effect=update),
+        ):
+            result = transcribe(audio_id, replace_existing=True, transcript_file_id=target_id)
+            self.assertEqual(result["status"], "replaced")
+            self.assertEqual(result["url"], f"https://drive.google.com/file/d/{target_id}/view")
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(source_fingerprint(updates[0].decode()), sha)
+
+            existing = stamp_transcript("different audio", "0" * 64)
+            self.assertEqual(
+                transcribe(audio_id, replace_existing=True, transcript_file_id=target_id)["status"],
+                "source_mismatch",
+            )
+            self.assertEqual(engine.call_count, 1)
+            self.assertEqual(len(updates), 1)
+
     def test_explicit_drive_replacement_preserves_id_and_tracks_configured_model(self):
         audio = b"synthetic audio"
         sha = hashlib.sha256(audio).hexdigest()

@@ -26,6 +26,7 @@ def run_job() -> dict:
     )
     language = normalize_language(os.environ.get("SCRIBEFLOW_LANGUAGE", "auto"))
     replace_existing = os.environ.get("SCRIBEFLOW_REPLACE_EXISTING") == "true"
+    transcript_file_id = os.environ.get("SCRIBEFLOW_TRANSCRIPT_FILE_ID", "").strip()
 
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,}", file_id):
         raise ValueError("SCRIBEFLOW_SOURCE_FILE_ID must be a Google Drive file ID")
@@ -57,9 +58,10 @@ def run_job() -> dict:
         previous = {name: os.environ.get(name) for name in scope}
         try:
             os.environ.update(scope)
+            options = {"transcript_file_id": transcript_file_id} if transcript_file_id else {}
             return transcribe(
                 file_id, keywords=keywords, prompt=prompt, language=language,
-                replace_existing=replace_existing,
+                replace_existing=replace_existing, **options,
             )
         finally:
             for name, value in previous.items():

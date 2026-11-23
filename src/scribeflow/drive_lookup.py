@@ -100,6 +100,20 @@ def update_transcript(file_id: str, token: str, data: bytes) -> dict:
         return json.loads(reply.read())
 
 
+def read_transcript(file_id: str, token: str) -> bytes:
+    """Read an explicitly selected existing plain-text transcript by Drive ID."""
+    metadata = _drive_metadata(file_id, token)
+    if (metadata.get("trashed") or metadata.get("mimeType") != "text/plain"
+            or not str(metadata.get("name", "")).lower().endswith(".txt")):
+        raise ValueError("The selected Google Drive file must be an existing TXT")
+    request = Request(
+        _DRIVE_API + file_id + "?" + urlencode({"alt": "media", "supportsAllDrives": "true"}),
+        headers={"Authorization": "Bearer " + token},
+    )
+    with urlopen(request, timeout=60) as reply:
+        return reply.read()
+
+
 def _valid_component(name: object) -> bool:
     return (
         isinstance(name, str) and len(name) > 0

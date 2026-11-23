@@ -92,6 +92,22 @@ class CloudWorkerTests(unittest.TestCase):
                         replace_existing=True,
                     )
 
+    def test_external_transcript_id_reaches_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config"
+            config.write_text("[gdrive]\ntype = drive\n", encoding="utf-8")
+            with patch.dict(os.environ, {
+                "SCRIBEFLOW_SOURCE_FILE_ID": "audio_" + "a" * 25,
+                "SCRIBEFLOW_TRANSCRIPT_FILE_ID": "text_" + "b" * 25,
+                "SCRIBEFLOW_RCLONE_CONFIG_SECRET": str(config),
+                "SCRIBEFLOW_REPLACE_EXISTING": "true", "OPENAI_API_KEY": "fake",
+            }):
+                with patch("scribeflow.cloud_worker.transcribe", return_value={"ok": True}) as transcribe:
+                    run_job()
+                self.assertEqual(
+                    transcribe.call_args.kwargs["transcript_file_id"], "text_" + "b" * 25
+                )
+
     def test_invalid_context_stops_before_transcription(self):
         with patch.dict(os.environ, {
             "SCRIBEFLOW_SOURCE_FILE_ID": "audio_" + "a" * 25,

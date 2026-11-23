@@ -97,6 +97,7 @@ class CloudRunJobs:
     def start(
         self, file_id: str, keywords: list[str] | tuple[str, ...] | None = None,
         prompt: str = "", language: str = "auto", *, replace_existing: bool = False, drive_envelope: str = "",
+        transcript_file_id: str = "",
     ) -> dict:
         """Queue one job with optional vocabulary/context; no audio in gateway."""
         if not _FILE_ID.fullmatch(file_id):
@@ -115,6 +116,10 @@ class CloudRunJobs:
             variables.append({"name": "SCRIBEFLOW_LANGUAGE", "value": language})
         if replace_existing:
             variables.append({"name": "SCRIBEFLOW_REPLACE_EXISTING", "value": "true"})
+        if transcript_file_id:
+            if not replace_existing or not _FILE_ID.fullmatch(transcript_file_id):
+                raise ValueError("A valid replacement TXT ID requires replacement mode")
+            variables.append({"name": "SCRIBEFLOW_TRANSCRIPT_FILE_ID", "value": transcript_file_id})
         overrides = {"containerOverrides": [{"env": variables}], "taskCount": 1}
         if drive_envelope:
             from .linked_drive import JOB_TIMEOUT_SECONDS
