@@ -165,6 +165,48 @@ def mocked_engine(source, directory, **kwargs):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_moved_txt_is_found_by_name_and_source_sha_without_new_tool_arguments(self):
+        audio = b"original recording bytes"
+        sha = hashlib.sha256(audio).hexdigest()
+        voice = "gdrive:recordings/recording.mp3"
+        audio_id = "audio_found_123456789012345"
+        transcript_id = "moved_transcript_1234567890"
+        existing = stamp_transcript("original transcript", sha)
+        calls = []
+
+        def fake_rclone(command, *args):
+            if command == "lsjson":
+                return type("R", (), {"stdout": json.dumps([
+                    {"Name": "recording.mp3", "ID": audio_id, "Hashes": {"sha256": sha}},
+                ])})()
+            if command == "copyto":
+                Path(args[1]).write_bytes(audio)
+                return type("R", (), {"stdout": ""})()
+            self.fail(f"Unexpected rclone call {command}")
+
+        def update(file_id, token, data):
+            calls.append(file_id)
+            return {"id": file_id, "sha256Checksum": hashlib.sha256(data).hexdigest()}
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("scribeflow.pipeline.cache_root", return_value=Path(directory)),
+            patch("scribeflow.pipeline.resolve_source", return_value=voice),
+            patch("scribeflow.pipeline.run_rclone", side_effect=fake_rclone),
+            patch("scribeflow.pipeline.find_transcripts_by_name", return_value=[transcript_id]),
+            patch("scribeflow.pipeline.read_transcript", side_effect=lambda *_: existing.encode()),
+            patch("scribeflow.pipeline._replacement_token", return_value="test-token"),
+            patch("scribeflow.pipeline.transcribe_file", side_effect=mocked_engine) as engine,
+            patch("scribeflow.pipeline.update_transcript", side_effect=update),
+        ):
+            self.assertEqual(transcribe(audio_id, replace_existing=True)["status"], "replaced")
+            self.assertEqual(calls, [transcript_id])
+            self.assertEqual(engine.call_count, 1)
+
+            existing = stamp_transcript("different original", "f" * 64)
+            self.assertEqual(transcribe(audio_id, replace_existing=True)["status"], "replacement_missing")
+            self.assertEqual(engine.call_count, 1)
+
     def test_replacement_txt_in_another_drive_folder_by_id(self):
         audio = b"synthetic recording"
         sha = hashlib.sha256(audio).hexdigest()

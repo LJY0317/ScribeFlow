@@ -22,7 +22,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .cache import clean_cache, job_lock, retain_failed_cache
-from .drive_lookup import candidate_from_id, existing_access_token, read_transcript, update_transcript
+from .drive_lookup import (
+    candidate_from_id, existing_access_token, find_transcripts_by_name,
+    read_transcript, update_transcript,
+)
 from .engine import (
     SUPPORTED_AUDIO_SUFFIXES,
     clock,
@@ -46,6 +49,7 @@ class Replacement:
     source_sha256: str
     transcript_sha256: str
     drive_id: str | None = None
+    external: bool = False
 
 
 def is_remote(value: str) -> bool:
@@ -268,7 +272,7 @@ def _replacement(
         if not source_sha:
             raise ValueError("Cannot verify the original Drive audio SHA-256")
         data = read_transcript(transcript_file_id, _replacement_token())
-        return Replacement(source_sha, hashlib.sha256(data).hexdigest(), transcript_file_id)
+        return Replacement(source_sha, hashlib.sha256(data).hexdigest(), transcript_file_id, True)
 
     parent, _, source_name = paths.source.rpartition("/")
     if not parent:
@@ -279,7 +283,22 @@ def _replacement(
     sources = [entry for entry in entries if entry.get("Name") == source_name]
     targets = [entry for entry in entries if entry.get("Name") == target_name]
     if not targets:
-        return None
+        if len(sources) != 1 or (requested_id and sources[0].get("ID") != requested_id):
+            raise ValueError("Drive 원본 파일을 확인하지 못했습니다.")
+        source_sha = sources[0].get("Hashes", {}).get("sha256") or ""
+        if not re.fullmatch(r"[0-9a-f]{64}", source_sha):
+            raise ValueError("Drive 원본 SHA-256을 확인할 수 없습니다.")
+        token = _replacement_token()
+        matches = []
+        for transcript_id in find_transcripts_by_name(target_name, token):
+            data = read_transcript(transcript_id, token)
+            if source_fingerprint(data.decode("utf-8")) == source_sha:
+                matches.append(Replacement(
+                    source_sha, hashlib.sha256(data).hexdigest(), transcript_id, True,
+                ))
+        if len(matches) > 1:
+            raise ValueError("원본 해시가 일치하는 TXT가 여러 폴더에 있습니다.")
+        return matches[0] if matches else None
     if len(sources) != 1 or len(targets) != 1:
         raise ValueError("Drive에 이름이 같은 원본 또는 TXT가 여러 개 있습니다.")
     source, target = sources[0], targets[0]
@@ -568,8 +587,8 @@ def _transcribe_locked(
         if replacement is None:
             return {"ok": False, "status": "replacement_missing", "transcript": paths.transcript}
         old = (
-            read_transcript(transcript_file_id, _replacement_token()).decode("utf-8")
-            if transcript_file_id else
+            read_transcript(replacement.drive_id, _replacement_token()).decode("utf-8")
+            if replacement.external else
             run_rclone("cat", paths.transcript, "--tail", "4096").stdout if paths.remote
             else Path(paths.transcript).read_text(encoding="utf-8")
         )

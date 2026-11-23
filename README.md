@@ -82,7 +82,8 @@ scribeflow transcribe '파일_ID' --json
 
 - `transcribe_audio`는 새 녹음을 전사합니다. 같은 파일의 작업을 반복 요청하면 기존 실행 상태를 반환하고, 기존 TXT를 보호합니다. 작업 실패 등을 다시 시도할 때 `retry=True`를 사용할 수 있습니다.
 - `retranscribe_audio`는 선택한 녹음을 현재 설정 모델로 다시 전사하고, 원본 SHA-256이 일치하는 기존 TXT의 내용만 갱신합니다. 같은 Drive 파일 ID와 링크가 유지됩니다. 새 전사에 OpenAI API 사용료가 발생합니다.
-- 기존 TXT를 다른 Google Drive 폴더로 이동한 경우에는 `retranscribe_audio(file_id="원본_음성_ID", transcript_file_id="기존_TXT_ID")`로 **기존 TXT 파일을 직접 지정**할 수 있습니다. 원본 SHA-256과 기존 TXT 말꼬리의 SHA-256이 일치해야 하며, 일치하지 않으면 전사 API를 호출하지 않습니다. 갱신 후 TXT의 파일 ID와 현재 폴더는 그대로 유지됩니다. `transcript_file_id`를 생략하면 기존처럼 원본 옆의 TXT만 갱신합니다.
+- 기존 TXT를 다른 Google Drive 폴더로 이동한 경우에는 `retranscribe_audio(file_id="원본_음성_ID", transcript_file_id="기존_TXT_ID")`로 **기존 TXT 파일을 직접 지정**할 수 있습니다. 원본 SHA-256과 기존 TXT 말꼬리의 SHA-256이 일치해야 하며, 일치하지 않으면 전사 API를 호출하지 않습니다. 갱신 후 TXT의 파일 ID와 현재 폴더는 그대로 유지됩니다. `transcript_file_id`를 생략하면 원본 폴더를 먼저 확인합니다.
+- 원본 폴더에 동명 TXT가 없으면 연결 계정의 Drive에서 **동일 파일명의 TXT를 찾아 원본 SHA-256이 일치하는 파일 한 개만** 갱신합니다. 일치 항목이 여러 개면 덮어쓰지 않으며, 지정한 TXT ID는 파일명 검색보다 우선합니다.
 - `get_transcription_status`는 작업 상태를 조회합니다. 폴더에서 녹음이나 TXT를 찾을 때는 Google Drive 연결이나 위의 `scan` 명령을 이용합니다. 연결된 Google Drive에서 TXT를 읽을 수 있으면 파일 끝의 `Model ID`를 ChatGPT에서 직접 확인할 수 있습니다.
 
 ## 원문 보존과 오디오 처리

@@ -114,6 +114,32 @@ def read_transcript(file_id: str, token: str) -> bytes:
         return reply.read()
 
 
+def find_transcripts_by_name(name: str, token: str) -> list[str]:
+    """Find accessible plain-text Drive items with one exact filename."""
+    quoted = "'" + name.replace("\\", "\\\\").replace("'", "\\'") + "'"
+    query = "name = " + quoted + " and mimeType = 'text/plain' and trashed = false"
+    result = []
+    page_token = ""
+    while True:
+        params = {
+            "q": query, "fields": "nextPageToken,files(id)", "pageSize": 100,
+            "corpora": "user", "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        request = Request(
+            "https://www.googleapis.com/drive/v3/files?" + urlencode(params),
+            headers={"Authorization": "Bearer " + token},
+        )
+        with urlopen(request, timeout=30) as reply:
+            response = json.load(reply)
+        result.extend(file["id"] for file in response.get("files", []))
+        page_token = response.get("nextPageToken", "")
+        if not page_token:
+            return result
+
+
 def _valid_component(name: object) -> bool:
     return (
         isinstance(name, str) and len(name) > 0
