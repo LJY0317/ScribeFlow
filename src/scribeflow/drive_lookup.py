@@ -71,7 +71,7 @@ def _drive_metadata(file_id: str, token: str) -> dict:
     if file_id != "root" and not _ID.fullmatch(file_id):
         raise ValueError("Invalid Google Drive metadata ID")
     query = urlencode({
-        "fields": "id,name,mimeType,parents,trashed",
+        "fields": "id,name,mimeType,parents,trashed,capabilities(canEdit)",
         "supportsAllDrives": "true",
     })
     url = _DRIVE_API + file_id + "?" + query
@@ -83,7 +83,9 @@ def _drive_metadata(file_id: str, token: str) -> dict:
         return json.loads(reply.read())
 
 
-def update_transcript(file_id: str, token: str, data: bytes) -> dict:
+def update_transcript(
+    file_id: str, token: str, data: bytes, *, content_type: str = "text/plain",
+) -> dict:
     """Replace the contents of an existing Drive file by ID."""
     if not _ID.fullmatch(file_id):
         raise ValueError("Invalid Google Drive transcript ID")
@@ -93,19 +95,24 @@ def update_transcript(file_id: str, token: str, data: bytes) -> dict:
     })
     request = Request(
         _DRIVE_UPLOAD_API + file_id + "?" + query,
-        headers={"Authorization": "Bearer " + token, "Content-Type": "text/plain"},
+        headers={"Authorization": "Bearer " + token, "Content-Type": content_type},
         method="PATCH", data=data,
     )
     with urlopen(request, timeout=60) as reply:
         return json.loads(reply.read())
 
 
-def read_transcript(file_id: str, token: str) -> bytes:
-    """Read an explicitly selected existing plain-text transcript by Drive ID."""
+def read_transcript(file_id: str, token: str, *, expected_extension: str = "") -> bytes:
+    """Read an editable TXT/Markdown target by ID, before paid transcription."""
     metadata = _drive_metadata(file_id, token)
-    if (metadata.get("trashed") or metadata.get("mimeType") != "text/plain"
-            or not str(metadata.get("name", "")).lower().endswith(".txt")):
-        raise ValueError("The selected Google Drive file must be an existing TXT")
+    name = str(metadata.get("name", "")).lower()
+    if (metadata.get("trashed") or metadata.get("mimeType") not in {"text/plain", "text/markdown"}
+            or not name.endswith((".txt", ".md"))):
+        raise ValueError("The selected Google Drive file must be an existing TXT or Markdown transcript")
+    if expected_extension and not name.endswith(expected_extension):
+        raise ValueError("The existing transcript does not match the selected output format")
+    if metadata.get("capabilities", {}).get("canEdit") is False:
+        raise PermissionError("This Google Drive transcript cannot be edited")
     request = Request(
         _DRIVE_API + file_id + "?" + urlencode({"alt": "media", "supportsAllDrives": "true"}),
         headers={"Authorization": "Bearer " + token},
@@ -115,29 +122,52 @@ def read_transcript(file_id: str, token: str) -> bytes:
 
 
 def find_transcripts_by_name(name: str, token: str) -> list[str]:
-    """Find accessible plain-text Drive items with one exact filename."""
+    """Find accessible TXT/Markdown files across personal and shared drives."""
     quoted = "'" + name.replace("\\", "\\\\").replace("'", "\\'") + "'"
-    query = "name = " + quoted + " and mimeType = 'text/plain' and trashed = false"
-    result = []
+    query = "name = " + quoted + " and trashed = false"
+    result = set()
+
+    def list_files(corpora: str, drive_id: str = "") -> None:
+        page_token = ""
+        while True:
+            params = {
+                "q": query, "fields": "nextPageToken,files(id,mimeType)", "pageSize": 100,
+                "corpora": corpora, "supportsAllDrives": "true",
+                "includeItemsFromAllDrives": "true" if drive_id else "false",
+            }
+            if drive_id:
+                params["driveId"] = drive_id
+            if page_token:
+                params["pageToken"] = page_token
+            request = Request(
+                "https://www.googleapis.com/drive/v3/files?" + urlencode(params),
+                headers={"Authorization": "Bearer " + token},
+            )
+            with urlopen(request, timeout=30) as reply:
+                response = json.load(reply)
+            result.update(file["id"] for file in response.get("files", [])
+                          if file.get("mimeType", "text/plain") in {"text/plain", "text/markdown"})
+            page_token = response.get("nextPageToken", "")
+            if not page_token:
+                break
+
+    list_files("user")
     page_token = ""
     while True:
-        params = {
-            "q": query, "fields": "nextPageToken,files(id)", "pageSize": 100,
-            "corpora": "user", "supportsAllDrives": "true",
-            "includeItemsFromAllDrives": "true",
-        }
+        params = {"fields": "nextPageToken,drives(id)", "pageSize": 100}
         if page_token:
             params["pageToken"] = page_token
         request = Request(
-            "https://www.googleapis.com/drive/v3/files?" + urlencode(params),
+            "https://www.googleapis.com/drive/v3/drives?" + urlencode(params),
             headers={"Authorization": "Bearer " + token},
         )
         with urlopen(request, timeout=30) as reply:
             response = json.load(reply)
-        result.extend(file["id"] for file in response.get("files", []))
+        for drive in response.get("drives", []):
+            list_files("drive", drive["id"])
         page_token = response.get("nextPageToken", "")
         if not page_token:
-            return result
+            return sorted(result)
 
 
 def _valid_component(name: object) -> bool:

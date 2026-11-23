@@ -8,12 +8,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlsplit
 
 from scribeflow.drive_lookup import (
     DrivePathCandidate,
     _drive_metadata,
     existing_access_token,
     candidate_from_id,
+    find_transcripts_by_name,
 )
 
 
@@ -25,6 +27,51 @@ HIDDEN_PARENT = "hidden_" + "E" * 24
 
 
 class DriveLookupTests(unittest.TestCase):
+    def test_moved_transcript_search_checks_each_shared_drive(self):
+        requests = []
+
+        class Reply:
+            def __init__(self, payload):
+                self.payload = payload
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return json.dumps(self.payload).encode()
+
+        def fake_open(request, timeout):
+            parsed = urlsplit(request.full_url)
+            params = parse_qs(parsed.query)
+            requests.append((parsed.path, params))
+            if parsed.path.endswith("/drives"):
+                return Reply({"drives": [{"id": FOLDER_ID}]})
+            if params["corpora"] == ["user"]:
+                return Reply({"files": [{"id": FILE_ID, "mimeType": "text/plain"}]})
+            self.assertEqual(params["corpora"], ["drive"])
+            self.assertEqual(params["driveId"], [FOLDER_ID])
+            return Reply({"files": [{"id": "markdown_" + "x" * 22, "mimeType": "text/markdown"}]})
+
+        with patch("scribeflow.drive_lookup.urlopen", side_effect=fake_open):
+            result = find_transcripts_by_name("conversation.md", "test-token")
+        self.assertEqual(set(result), {FILE_ID, "markdown_" + "x" * 22})
+        self.assertEqual(len(requests), 3)
+
+    def test_replacement_target_must_be_editable_and_match_format(self):
+        from scribeflow.drive_lookup import read_transcript
+
+        info = {
+            "name": "conversation.md", "mimeType": "text/markdown", "trashed": False,
+            "capabilities": {"canEdit": False},
+        }
+        with patch("scribeflow.drive_lookup._drive_metadata", return_value=info), \
+             patch("scribeflow.drive_lookup.urlopen") as network:
+            with self.assertRaisesRegex(ValueError, "output format"):
+                read_transcript(FILE_ID, "token", expected_extension=".txt")
+            with self.assertRaises(PermissionError):
+                read_transcript(FILE_ID, "token", expected_extension=".md")
+            network.assert_not_called()
+
     def test_reads_private_token_without_exposing_rclone_config(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "rclone.conf"

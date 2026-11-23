@@ -40,6 +40,7 @@ class QualityTests(unittest.TestCase):
         self.assertEqual(comparable_text("안녕, 세상!"), "안녕세상")
         self.assertEqual(comparable_text(" \tHELLO\n"), "hello")
         self.assertEqual(comparable_text("가"), comparable_text("가"))
+        self.assertEqual(comparable_text("## [00:00:00–00:00:05]\n안녕하세요."), "안녕하세요")
         self.assertEqual(
             comparable_text(
                 "안녕하세요.\n\n<!-- ScribeFlow SHA256: " + "a" * 64 + " -->\n"

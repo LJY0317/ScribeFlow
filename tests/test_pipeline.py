@@ -165,6 +165,42 @@ def mocked_engine(source, directory, **kwargs):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_markdown_transcription_preserves_audio_and_has_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "conversation.m4a"
+            audio.write_bytes(b"unchanged synthetic audio")
+            with patch("scribeflow.pipeline.cache_root", return_value=root / "cache"), \
+                 patch("scribeflow.pipeline.transcribe_file", side_effect=mocked_engine):
+                result = transcribe(str(audio), output_format="md")
+                repeated = transcribe(str(audio), output_format="md")
+            markdown = audio.with_suffix(".md")
+            self.assertEqual(result["status"], "created")
+            self.assertEqual(repeated["status"], "skipped_existing")
+            self.assertEqual(result["transcript"], str(markdown.resolve()))
+            self.assertFalse(audio.with_suffix(".txt").exists())
+            self.assertEqual(audio.read_bytes(), b"unchanged synthetic audio")
+            content = markdown.read_text(encoding="utf-8")
+            self.assertTrue(content.startswith("## [00:00:00–00:00:10]\n"))
+            self.assertEqual(source_fingerprint(content), hashlib.sha256(audio.read_bytes()).hexdigest())
+            from scribeflow.quality import comparable_text
+            self.assertEqual(comparable_text(content), comparable_text("테스트 전사문"))
+
+    def test_output_format_must_match_requested_filename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audio = Path(directory) / "conversation.m4a"
+            audio.write_bytes(b"audio")
+            self.assertEqual(paths_for(str(audio), output_format="md").transcript,
+                             str(audio.with_suffix(".md").resolve()))
+            with self.assertRaises(ValueError):
+                paths_for(str(audio), str(audio.with_suffix(".md")))
+            with self.assertRaises(ValueError):
+                transcribe(str(audio), output_format="html")
+            with patch("scribeflow.pipeline.transcribe_file") as engine:
+                with self.assertRaises(ValueError):
+                    transcribe(str(audio), keywords=("<invalid>",))
+                engine.assert_not_called()
+
     def test_moved_txt_is_found_by_name_and_source_sha_without_new_tool_arguments(self):
         audio = b"original recording bytes"
         sha = hashlib.sha256(audio).hexdigest()
@@ -194,12 +230,15 @@ class PipelineTests(unittest.TestCase):
             patch("scribeflow.pipeline.resolve_source", return_value=voice),
             patch("scribeflow.pipeline.run_rclone", side_effect=fake_rclone),
             patch("scribeflow.pipeline.find_transcripts_by_name", return_value=[transcript_id]),
-            patch("scribeflow.pipeline.read_transcript", side_effect=lambda *_: existing.encode()),
+            patch("scribeflow.pipeline.read_transcript", side_effect=lambda *_, **__: existing.encode()),
             patch("scribeflow.pipeline._replacement_token", return_value="test-token"),
             patch("scribeflow.pipeline.transcribe_file", side_effect=mocked_engine) as engine,
             patch("scribeflow.pipeline.update_transcript", side_effect=update),
         ):
-            self.assertEqual(transcribe(audio_id, replace_existing=True)["status"], "replaced")
+            replaced = transcribe(audio_id, replace_existing=True)
+            self.assertEqual(replaced["status"], "replaced")
+            self.assertIsNone(replaced["transcript"])
+            self.assertEqual(replaced["transcript_file_id"], transcript_id)
             self.assertEqual(calls, [transcript_id])
             self.assertEqual(engine.call_count, 1)
 
@@ -237,7 +276,7 @@ class PipelineTests(unittest.TestCase):
             patch("scribeflow.pipeline.cache_root", return_value=Path(directory)),
             patch("scribeflow.pipeline.resolve_source", return_value=voice),
             patch("scribeflow.pipeline.run_rclone", side_effect=fake_rclone),
-            patch("scribeflow.pipeline.read_transcript", side_effect=lambda *_: existing.encode()),
+            patch("scribeflow.pipeline.read_transcript", side_effect=lambda *_, **__: existing.encode()),
             patch("scribeflow.pipeline._replacement_token", return_value="test-token"),
             patch("scribeflow.pipeline.transcribe_file", side_effect=mocked_engine) as engine,
             patch("scribeflow.pipeline.update_transcript", side_effect=update),
@@ -298,6 +337,7 @@ class PipelineTests(unittest.TestCase):
             patch("scribeflow.pipeline.resolve_source", return_value=voice),
             patch("scribeflow.pipeline.run_rclone", side_effect=fake_rclone),
             patch("scribeflow.pipeline._replacement_token", return_value="test-token"),
+            patch("scribeflow.pipeline.read_transcript", side_effect=lambda *_, **__: existing.encode()),
             patch("scribeflow.pipeline.transcribe_file", side_effect=mocked_engine) as engine,
             patch("scribeflow.pipeline.update_transcript", side_effect=update) as upload,
         ):
@@ -324,6 +364,29 @@ class PipelineTests(unittest.TestCase):
                 transcribe(audio_id, replace_existing=True)
             self.assertIn("사용자가 편집한 전사문", existing)
             upload.assert_called_once()
+
+    def test_uneditable_adjacent_transcript_fails_before_paid_api(self):
+        source = "gdrive:folder/recording.m4a"
+        original_sha = hashlib.sha256(b"original").hexdigest()
+        existing = stamp_transcript("old words", original_sha)
+        transcript_id = "transcript_test_123456789012"
+        entries = [
+            {"Name": "recording.m4a", "ID": "audio_test_123456789012",
+             "Hashes": {"sha256": original_sha}},
+            {"Name": "recording.txt", "ID": transcript_id,
+             "Hashes": {"sha256": hashlib.sha256(existing.encode()).hexdigest()}},
+        ]
+        with tempfile.TemporaryDirectory() as directory, \
+             patch("scribeflow.pipeline.cache_root", return_value=Path(directory)), \
+             patch("scribeflow.pipeline.run_rclone", return_value=type("R", (), {
+                 "stdout": json.dumps(entries),
+             })()), \
+             patch("scribeflow.pipeline._replacement_token", return_value="fake-token"), \
+             patch("scribeflow.pipeline.read_transcript", side_effect=PermissionError("not editable")), \
+             patch("scribeflow.pipeline.transcribe_file") as engine:
+            with self.assertRaises(PermissionError):
+                transcribe(source, replace_existing=True)
+            engine.assert_not_called()
 
     def test_concurrent_different_settings_only_call_model_once(self):
         with tempfile.TemporaryDirectory() as directory:

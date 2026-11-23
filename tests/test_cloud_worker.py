@@ -108,6 +108,29 @@ class CloudWorkerTests(unittest.TestCase):
                     transcribe.call_args.kwargs["transcript_file_id"], "text_" + "b" * 25
                 )
 
+    def test_markdown_and_replacement_do_not_require_parent_create_permission(self):
+        from scribeflow.linked_drive import DriveCredential
+        from cryptography.fernet import Fernet
+        from types import SimpleNamespace
+        key = Fernet.generate_key().decode()
+        audio_id = "audio_" + "a" * 25
+        with patch.dict(os.environ, {
+            "SCRIBEFLOW_SOURCE_FILE_ID": audio_id,
+            "SCRIBEFLOW_LINKED_DRIVE_ENVELOPE": "sealed",
+            "SCRIBEFLOW_DRIVE_JOB_KEY": key,
+            "SCRIBEFLOW_REPLACE_EXISTING": "true",
+            "SCRIBEFLOW_OUTPUT_FORMAT": "md",
+            "OPENAI_API_KEY": "fake",
+        }), patch("scribeflow.cloud_worker.DriveCredential.open", return_value=SimpleNamespace(
+            rclone_config=lambda _: "[gdrive]\ntype = drive\n",
+        )), patch("scribeflow.cloud_worker.check_file", return_value={
+            "can_download": True, "can_save_transcript": False,
+            "parent_id": "parent_id_1234567890123456", "drive_id": None,
+        }), patch("scribeflow.cloud_worker.transcribe", return_value={"ok": True}) as call:
+            self.assertTrue(run_job()["ok"])
+            self.assertEqual(call.call_args.kwargs["output_format"], "md")
+            self.assertTrue(call.call_args.kwargs["replace_existing"])
+
     def test_invalid_context_stops_before_transcription(self):
         with patch.dict(os.environ, {
             "SCRIBEFLOW_SOURCE_FILE_ID": "audio_" + "a" * 25,

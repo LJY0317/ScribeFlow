@@ -51,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
 
     paths = sub.add_parser("paths", help="원본과 최종 전사문 위치 확인 (API 호출 없음)")
     paths.add_argument("audio")
+    paths.add_argument("--format", choices=("txt", "md"), default="txt")
 
     scan = sub.add_parser("scan", help="Google Drive 폴더의 전사 상태 조회 (OpenAI 호출 없음)")
     scan.add_argument("folder", help="gdrive: 또는 gdrive:하위폴더")
@@ -79,7 +80,8 @@ def main(argv: list[str] | None = None) -> int:
 
     command = sub.add_parser("transcribe", help="구간별 전사 후 하나의 텍스트 저장")
     command.add_argument("audio", help="로컬 경로 또는 gdrive:폴더/녹음.m4a")
-    command.add_argument("--output", help="동일한 폴더에 저장할 .txt 파일명")
+    command.add_argument("--output", help="동일한 폴더에 저장할 출력 파일명")
+    command.add_argument("--format", choices=("txt", "md"), default="txt", help="저장 형식 (기본 txt)")
     command.add_argument(
         "--replace-existing", action="store_true",
         help="원본 SHA-256이 일치하는 기존 TXT를 재전사 결과로 갱신",
@@ -129,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
                 inspect_audio(args.audio), ensure_ascii=False, indent=2,
             ))
         elif args.command == "paths":
-            output = paths_for(args.audio)
+            output = paths_for(args.audio, output_format=args.format)
             print(json.dumps(
                 {"source": output.source, "transcript": output.transcript},
                 ensure_ascii=False,
@@ -158,12 +160,12 @@ def main(argv: list[str] | None = None) -> int:
                 overlap_seconds=args.overlap_seconds,
                 language=args.language,
                 keywords=tuple(args.keyword), prompt=args.prompt,
-                replace_existing=args.replace_existing,
+                replace_existing=args.replace_existing, output_format=args.format,
             )
             if args.json:
                 print(json.dumps(result, ensure_ascii=False))
             else:
-                print(f"\n{result['status']}: {result['transcript']}")
+                print(f"\n{result['status']}: {result.get('url') or result['transcript']}")
             if not result.get("ok", False):
                 return 1
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:

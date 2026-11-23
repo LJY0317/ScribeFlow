@@ -46,8 +46,8 @@ class CloudGatewayTests(unittest.TestCase):
         tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
         self.assertNotIn("search_drive_files", tools)
         self.assertEqual(tools["get_profile"].meta["openai/profile"], True)
-        self.assertFalse(tools["transcribe_audio"].annotations.destructiveHint)
-        self.assertTrue(tools["retranscribe_audio"].annotations.destructiveHint)
+        self.assertFalse(tools["transcribe_audio"].annotations.destructive_hint)
+        self.assertTrue(tools["retranscribe_audio"].annotations.destructive_hint)
         self.assertIn("transcript_file_id", tools["retranscribe_audio"].parameters["properties"])
 
     def test_transcribe_tool_exposes_optional_context_fields(self):
@@ -60,6 +60,7 @@ class CloudGatewayTests(unittest.TestCase):
         self.assertIn("prompt", schema["properties"])
         self.assertIn("retry", schema["properties"])
         self.assertIn("language", schema["properties"])
+        self.assertIn("output_format", schema["properties"])
         self.assertIn("file_id", schema.get("required", []))
         self.assertNotIn("keywords", schema.get("required", []))
         self.assertNotIn("prompt", schema.get("required", []))
@@ -152,6 +153,40 @@ class CloudGatewayTests(unittest.TestCase):
                         envelope = launch.call_args.kwargs["drive_envelope"]
                         self.assertEqual(DriveCredential.open(envelope, file_id).access_token, grant.token)
 
+        asyncio.run(check())
+
+    def test_linked_replacement_keeps_explicit_transcript_id_and_markdown_format(self):
+        from cryptography.fernet import Fernet
+        from fastmcp import Client
+        from fastmcp.server.auth import AccessToken
+
+        key = Fernet.generate_key().decode()
+        server = self.server(SCRIBEFLOW_LINKED_DRIVE="1", SCRIBEFLOW_DRIVE_JOB_KEY=key)
+        audio_id = "audio_" + "a" * 25
+        text_id = "transcript_" + "b" * 25
+
+        async def check():
+            async with Client(server) as client:
+                grant = AccessToken(
+                    token="fake", client_id="owner-id",
+                    scopes=["https://www.googleapis.com/auth/drive"],
+                    expires_at=int(time.time()) + 3600,
+                    claims={"sub": "owner-id", "email": "owner@example.com", "email_verified": True},
+                )
+                with patch.dict(os.environ, {"SCRIBEFLOW_DRIVE_JOB_KEY": key}), \
+                     patch("fastmcp.server.dependencies.get_access_token", return_value=grant), \
+                     patch("scribeflow.cloud_gateway.check_file", return_value={
+                         "name": "audio.m4a", "can_download": True,
+                         "can_save_transcript": False,
+                     }), \
+                     patch("scribeflow.cloud_gateway.DeduplicatingCloudRunJobs.start",
+                           return_value={"status": "submitted"}) as submit:
+                    await client.call_tool("retranscribe_audio", {
+                        "file_id": audio_id, "transcript_file_id": text_id,
+                        "output_format": "md",
+                    })
+                    self.assertEqual(submit.call_args.kwargs["transcript_file_id"], text_id)
+                    self.assertEqual(submit.call_args.kwargs["output_format"], "md")
         asyncio.run(check())
 
     def test_oauth_metadata_and_unauthorized_mcp(self):

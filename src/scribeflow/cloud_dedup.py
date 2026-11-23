@@ -17,7 +17,10 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .cloud_run import _FILE_ID, CloudRunJobs, normalize_language, normalize_transcription_context
+from .cloud_run import (
+    _FILE_ID, CloudRunJobs, normalize_language, normalize_output_format,
+    normalize_transcription_context,
+)
 
 COLLECTION = "scribeflow_job_claims"
 _CLEANUP_MARKER = "cleanup_day"
@@ -207,13 +210,14 @@ class DeduplicatingCloudRunJobs:
     def _submit(
         self, key: str, claim: dict, file_id: str,
         keywords: tuple[str, ...], prompt: str, language: str, replace_existing: bool,
-        drive_envelope: str, transcript_file_id: str = "",
+        drive_envelope: str, transcript_file_id: str = "", output_format: str = "txt",
     ) -> dict:
         # If Cloud Run accepted this request but its response was lost, the
         # claim stays pending. This is intentionally not auto-retried.
         result = self.backend.start(
             file_id, keywords=keywords, prompt=prompt, language=language,
             replace_existing=replace_existing,
+            **({"output_format": output_format} if output_format != "txt" else {}),
             **({"transcript_file_id": transcript_file_id} if transcript_file_id else {}),
             **({"drive_envelope": drive_envelope} if drive_envelope else {}),
         )
@@ -232,12 +236,13 @@ class DeduplicatingCloudRunJobs:
         self, file_id: str, keywords: list[str] | tuple[str, ...] | None = None,
         prompt: str = "", retry: bool = False, language: str = "auto",
         *, replace_existing: bool = False, owner: str = "", drive_envelope: str = "",
-        transcript_file_id: str = "",
+        transcript_file_id: str = "", output_format: str = "txt",
     ) -> dict:
         if not isinstance(file_id, str) or not _FILE_ID.fullmatch(file_id):
             raise ValueError("A valid Google Drive file ID is required")
         normalized, prompt = normalize_transcription_context(keywords, prompt)
         language = normalize_language(language)
+        output_format = normalize_output_format(output_format)
         if not isinstance(retry, bool):
             raise ValueError("retry must be a boolean")
         try:
@@ -248,7 +253,7 @@ class DeduplicatingCloudRunJobs:
         def submit(claim: dict) -> dict:
             return self._submit(
                 key, claim, file_id, normalized, prompt, language, replace_existing, drive_envelope,
-                transcript_file_id,
+                transcript_file_id, output_format,
             )
 
         key = hashlib.sha256(file_id.encode("utf-8")).hexdigest()

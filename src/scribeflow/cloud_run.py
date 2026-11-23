@@ -14,6 +14,12 @@ _REGION = re.compile(r"[a-z]+-[a-z]+[0-9]+")
 _LANGUAGE = re.compile(r"(?:[a-z]{2,3}|zh-(?:cn|tw|hk))")
 
 
+def normalize_output_format(value: str) -> str:
+    if value not in ("txt", "md"):
+        raise ValueError("output_format must be 'txt' or 'md'")
+    return value
+
+
 def normalize_language(language: str) -> str:
     """Use 'auto' to omit language hints; allow an explicit input language."""
     if not isinstance(language, str) or not (
@@ -37,7 +43,7 @@ def normalize_transcription_context(
         if not isinstance(term, str):
             raise ValueError("Transcription keywords must be strings")
         term = term.strip()
-        if not term or len(term) > 80 or any(ord(ch) < 32 for ch in term):
+        if not term or len(term) > 80 or any(ord(ch) < 32 or ch in "<>" for ch in term):
             raise ValueError("Each keyword must be a single nonempty term (up to 80 characters)")
         normalized.append(term)
     if not isinstance(prompt, str):
@@ -98,12 +104,14 @@ class CloudRunJobs:
         self, file_id: str, keywords: list[str] | tuple[str, ...] | None = None,
         prompt: str = "", language: str = "auto", *, replace_existing: bool = False, drive_envelope: str = "",
         transcript_file_id: str = "",
+        output_format: str = "txt",
     ) -> dict:
         """Queue one job with optional vocabulary/context; no audio in gateway."""
         if not _FILE_ID.fullmatch(file_id):
             raise ValueError("A valid Google Drive file ID is required")
         terms, context = normalize_transcription_context(keywords, prompt)
         language = normalize_language(language)
+        output_format = normalize_output_format(output_format)
         variables = [{"name": "SCRIBEFLOW_SOURCE_FILE_ID", "value": file_id}]
         if terms:
             variables.append({
@@ -114,6 +122,8 @@ class CloudRunJobs:
             variables.append({"name": "SCRIBEFLOW_PROMPT", "value": context})
         if language != "auto":
             variables.append({"name": "SCRIBEFLOW_LANGUAGE", "value": language})
+        if output_format != "txt":
+            variables.append({"name": "SCRIBEFLOW_OUTPUT_FORMAT", "value": output_format})
         if replace_existing:
             variables.append({"name": "SCRIBEFLOW_REPLACE_EXISTING", "value": "true"})
         if transcript_file_id:

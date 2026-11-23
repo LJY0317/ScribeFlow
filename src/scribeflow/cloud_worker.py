@@ -27,6 +27,7 @@ def run_job() -> dict:
     language = normalize_language(os.environ.get("SCRIBEFLOW_LANGUAGE", "auto"))
     replace_existing = os.environ.get("SCRIBEFLOW_REPLACE_EXISTING") == "true"
     transcript_file_id = os.environ.get("SCRIBEFLOW_TRANSCRIPT_FILE_ID", "").strip()
+    output_format = os.environ.get("SCRIBEFLOW_OUTPUT_FORMAT", "txt")
 
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,}", file_id):
         raise ValueError("SCRIBEFLOW_SOURCE_FILE_ID must be a Google Drive file ID")
@@ -44,7 +45,7 @@ def run_job() -> dict:
         if envelope:
             credential = DriveCredential.open(envelope, file_id)
             record = check_file(credential, file_id)
-            if not record["can_download"] or not record["can_save_transcript"]:
+            if not record["can_download"] or (not replace_existing and not record["can_save_transcript"]):
                 raise PermissionError("The connected account lost access to the audio or its output folder")
             config.touch(mode=0o600)
             config.write_text(credential.rclone_config(record["drive_id"]), encoding="utf-8")
@@ -59,6 +60,8 @@ def run_job() -> dict:
         try:
             os.environ.update(scope)
             options = {"transcript_file_id": transcript_file_id} if transcript_file_id else {}
+            if output_format != "txt":
+                options["output_format"] = output_format
             return transcribe(
                 file_id, keywords=keywords, prompt=prompt, language=language,
                 replace_existing=replace_existing, **options,

@@ -170,7 +170,7 @@ def create_server():
             """Check a file's download and output folder permissions without transcribing."""
             return check_file(linked_credential(_require_owner(emails)), file_id)
 
-    def start(file_id, keywords, prompt, retry, language, *, replace_existing=False, transcript_file_id=""):
+    def start(file_id, keywords, prompt, retry, language, *, replace_existing=False, transcript_file_id="", output_format="txt"):
         token = _require_owner(emails)
         options = {}
         if transcript_file_id:
@@ -182,13 +182,14 @@ def create_server():
                 raise ValueError("A valid Google Drive file ID is required")
             credential = linked_credential(token)
             file = check_file(credential, file_id)
-            if not file["can_download"] or not file["can_save_transcript"]:
+            if not file["can_download"] or (not replace_existing and not file["can_save_transcript"]):
                 raise PermissionError("The connected account must be able to read the audio and save its TXT")
             if os.path.splitext(file["name"])[1].lower() not in SUPPORTED_AUDIO_SUFFIXES:
                 raise ValueError("Select a supported audio file")
-            options = {"owner": str(token.claims["sub"]), "drive_envelope": credential.seal(file_id)}
+            options.update(owner=str(token.claims["sub"]), drive_envelope=credential.seal(file_id))
         return backend.start(
             file_id, keywords=keywords, prompt=prompt, retry=retry, language=language,
+            **({"output_format": output_format} if output_format != "txt" else {}),
             **({"replace_existing": True} if replace_existing else {}), **options,
         )
 
@@ -208,9 +209,9 @@ def create_server():
     )
     def transcribe_audio(
         file_id: str, keywords: list[str] | None = None, prompt: str = "",
-        retry: bool = False, language: str = "auto",
+        retry: bool = False, language: str = "auto", output_format: str = "txt",
     ) -> dict:
-        return start(file_id, keywords, prompt, retry, language)
+        return start(file_id, keywords, prompt, retry, language, output_format=output_format)
 
     @server.tool(
         description=(
@@ -226,11 +227,11 @@ def create_server():
     )
     def retranscribe_audio(
         file_id: str, keywords: list[str] | None = None, prompt: str = "",
-        language: str = "auto", transcript_file_id: str = "",
+        language: str = "auto", transcript_file_id: str = "", output_format: str = "txt",
     ) -> dict:
         return start(
             file_id, keywords, prompt, True, language, replace_existing=True,
-            transcript_file_id=transcript_file_id,
+            transcript_file_id=transcript_file_id, output_format=output_format,
         )
 
     @server.tool(

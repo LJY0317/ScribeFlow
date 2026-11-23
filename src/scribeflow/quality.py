@@ -15,7 +15,7 @@ from collections.abc import Iterable
 from .provenance import strip_transcript_footer
 
 _AUDIO_RANGE_LINE = re.compile(
-    r"^\[[0-9]{2,}:[0-9]{2}:[0-9]{2}–[0-9]{2,}:[0-9]{2}:[0-9]{2}\]\r?\n",
+    r"^(?:## )?\[[0-9]{2,}:[0-9]{2}:[0-9]{2}–[0-9]{2,}:[0-9]{2}:[0-9]{2}\]\r?\n",
     re.MULTILINE,
 )
 

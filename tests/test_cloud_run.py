@@ -35,6 +35,16 @@ class CloudRunTests(unittest.TestCase):
                          {"name": "SCRIBEFLOW_SOURCE_FILE_ID", "value": "testfile_" + "a" * 22})
         self.assertEqual(len(payload["overrides"]["containerOverrides"][0]["env"]), 1)
 
+    def test_markdown_format_is_forwarded_without_changing_txt_default(self):
+        self.session.request.return_value = self._response({
+            "name": self.prefix + "abcdef"
+        })
+        self.api.start("testfile_" + "a" * 22, output_format="md")
+        env = self.session.request.call_args.kwargs["json"]["overrides"]["containerOverrides"][0]["env"]
+        self.assertIn({"name": "SCRIBEFLOW_OUTPUT_FORMAT", "value": "md"}, env)
+        with self.assertRaises(ValueError):
+            self.api.start("testfile_" + "a" * 22, output_format="pdf")
+
     def test_explicit_transcript_id_is_scoped_to_replacement(self):
         self.session.request.return_value = self._response({
             "name": self.prefix + "1234567890abcdef"
@@ -91,6 +101,7 @@ class CloudRunTests(unittest.TestCase):
             ([""] , ""),
             (["a"] * 21, ""),
             (["a\nb"], ""),
+            (["<tag>"], ""),
             ([123], ""),
             ([], "a" * 501),
         ]
