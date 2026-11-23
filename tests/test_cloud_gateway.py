@@ -1,7 +1,9 @@
 """OAuth boundary checks; no Google credentials or network requests are needed."""
 
 import asyncio
+import json
 import os
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -20,9 +22,9 @@ class CloudGatewayTests(unittest.TestCase):
             "GOOGLE_CLOUD_PROJECT": "sample-cloud-project",
         }
 
-    def server(self):
+    def server(self, **settings):
         from key_value.aio.stores.memory import MemoryStore
-        with patch.dict(os.environ, self.settings):
+        with patch.dict(os.environ, {**self.settings, **settings}, clear=True):
             with patch("scribeflow.cloud_gateway.CloudRunJobs"):
                 with patch("key_value.aio.stores.firestore.FirestoreStore",
                            side_effect=lambda **kwargs: MemoryStore()):
@@ -42,7 +44,8 @@ class CloudGatewayTests(unittest.TestCase):
     def test_replacement_is_a_separate_destructive_tool(self):
         server = self.server()
         tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
-        self.assertEqual(set(tools), {"transcribe_audio", "retranscribe_audio", "get_transcription_status"})
+        self.assertNotIn("search_drive_files", tools)
+        self.assertEqual(tools["get_profile"].meta["openai/profile"], True)
         self.assertFalse(tools["transcribe_audio"].annotations.destructiveHint)
         self.assertTrue(tools["retranscribe_audio"].annotations.destructiveHint)
 
@@ -79,6 +82,76 @@ class CloudGatewayTests(unittest.TestCase):
                            return_value=SimpleNamespace(claims=other) if other else None):
                     with self.assertRaises(PermissionError):
                         _require_owner(owner)
+
+    def test_linked_profile_uses_current_account_without_a_nickname(self):
+        from fastmcp import Client
+        from fastmcp.server.auth import AccessToken
+
+        server = self.server(
+            SCRIBEFLOW_LINKED_DRIVE="1", SCRIBEFLOW_DRIVE_JOB_KEY="set-for-test",
+            SCRIBEFLOW_GOOGLE_ADDITIONAL_EMAILS="second@example.com",
+        )
+
+        async def check():
+            async with Client(server) as client:
+                for email, subject in (("owner@example.com", "google-1"), ("second@example.com", "google-2")):
+                    claims = {
+                        "email": email, "sub": subject, "email_verified": True, "name": "Google user",
+                        "picture": "https://example.com/profile.jpg",
+                    }
+                    with patch("fastmcp.server.dependencies.get_access_token",
+                               return_value=AccessToken(token="fake", client_id=subject, scopes=[], claims=claims)):
+                        profile = await client.call_tool("get_profile", {})
+                        photo = await client.call_tool("get_google_profile_photo", {})
+                    self.assertEqual(profile.structured_content, {
+                        "id": subject, "email": email, "name": "Google user",
+                    })
+                    self.assertEqual(json.loads(profile.content[0].text), profile.structured_content)
+                    self.assertEqual(photo.structured_content, {"picture": claims["picture"]})
+
+        asyncio.run(check())
+
+    def test_transcribe_uses_the_selected_accounts_drive_grant(self):
+        from cryptography.fernet import Fernet
+        from fastmcp import Client
+        from fastmcp.server.auth import AccessToken
+
+        from scribeflow.linked_drive import DRIVE_SCOPE, DriveCredential
+
+        key = Fernet.generate_key().decode()
+        server = self.server(
+            SCRIBEFLOW_LINKED_DRIVE="1", SCRIBEFLOW_DRIVE_JOB_KEY=key,
+            SCRIBEFLOW_GOOGLE_ADDITIONAL_EMAILS="second@example.com third@example.com",
+        )
+        file_id = "audio_" + "a" * 26
+        submitted = {"status": "submitted", "operation": "existing-test-operation"}
+
+        async def check():
+            async with Client(server) as client:
+                for index, email in enumerate(("owner@example.com", "second@example.com", "third@example.com")):
+                    subject = f"google-{index}"
+                    grant = AccessToken(
+                        token=f"account-token-{index}", client_id=subject, scopes=[DRIVE_SCOPE],
+                        expires_at=int(time.time()) + 3600,
+                        claims={"sub": subject, "email": email, "email_verified": True},
+                    )
+                    with self.subTest(email=email), patch.dict(os.environ, {"SCRIBEFLOW_DRIVE_JOB_KEY": key}), \
+                         patch("fastmcp.server.dependencies.get_access_token", return_value=grant), \
+                         patch("scribeflow.cloud_gateway.check_file", return_value={
+                             "name": "audio.wav", "can_download": True, "can_save_transcript": True,
+                         }) as check_file, \
+                         patch("scribeflow.cloud_gateway.DeduplicatingCloudRunJobs.start",
+                               return_value=submitted) as launch:
+                        result = await client.call_tool("transcribe_audio", {"file_id": file_id})
+                        self.assertEqual(result.structured_content, submitted)
+                        check_file.assert_called_once()
+                        self.assertEqual(check_file.call_args.args[0].access_token, grant.token)
+                        launch.assert_called_once()
+                        self.assertEqual(launch.call_args.kwargs["owner"], subject)
+                        envelope = launch.call_args.kwargs["drive_envelope"]
+                        self.assertEqual(DriveCredential.open(envelope, file_id).access_token, grant.token)
+
+        asyncio.run(check())
 
     def test_oauth_metadata_and_unauthorized_mcp(self):
         import httpx2 as httpx

@@ -11,12 +11,14 @@ import tempfile
 from pathlib import Path
 
 from .cloud_run import normalize_language, normalize_transcription_context
+from .linked_drive import DriveCredential, check_file
 from .pipeline import transcribe
 
 
 def run_job() -> dict:
     """Run one transcription; credentials are injected at deployment time."""
     file_id = os.environ.get("SCRIBEFLOW_SOURCE_FILE_ID", "").strip()
+    envelope = os.environ.get("SCRIBEFLOW_LINKED_DRIVE_ENVELOPE", "")
     config_secret = os.environ.get("SCRIBEFLOW_RCLONE_CONFIG_SECRET", "").strip()
     keywords, prompt = normalize_transcription_context(
         json.loads(os.environ.get("SCRIBEFLOW_KEYWORDS_JSON") or "[]"),
@@ -29,7 +31,7 @@ def run_job() -> dict:
         raise ValueError("SCRIBEFLOW_SOURCE_FILE_ID must be a Google Drive file ID")
     if not os.environ.get("OPENAI_API_KEY"):
         raise ValueError("OPENAI_API_KEY is not configured")
-    if not config_secret or not Path(config_secret).is_file():
+    if not envelope and (not config_secret or not Path(config_secret).is_file()):
         raise ValueError("ScribeFlow rclone config secret must be mounted as a file")
 
     # The Secret Manager mount is read-only, but rclone can refresh OAuth tokens.
@@ -37,26 +39,34 @@ def run_job() -> dict:
     with tempfile.TemporaryDirectory(prefix="scribeflow-cloud-") as directory:
         private = Path(directory)
         config = private / "rclone.conf"
-        shutil.copyfile(config_secret, config)
-        config.chmod(0o600)
-        old_config = os.environ.get("RCLONE_CONFIG")
-        old_cache = os.environ.get("SCRIBEFLOW_CACHE_DIR")
+        scope = {}
+        if envelope:
+            credential = DriveCredential.open(envelope, file_id)
+            record = check_file(credential, file_id)
+            if not record["can_download"] or not record["can_save_transcript"]:
+                raise PermissionError("The connected account lost access to the audio or its output folder")
+            config.touch(mode=0o600)
+            config.write_text(credential.rclone_config(record["drive_id"]), encoding="utf-8")
+            scope = {"SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID": record["parent_id"]}
+        else:
+            shutil.copyfile(config_secret, config)
+            config.chmod(0o600)
+        scope.update(RCLONE_CONFIG=str(config), SCRIBEFLOW_CACHE_DIR=str(private / "cache"))
+        if envelope:
+            scope["RCLONE_DRIVE_SHARED_WITH_ME"] = "false"
+        previous = {name: os.environ.get(name) for name in scope}
         try:
-            os.environ["RCLONE_CONFIG"] = str(config)
-            os.environ["SCRIBEFLOW_CACHE_DIR"] = str(private / "cache")
+            os.environ.update(scope)
             return transcribe(
                 file_id, keywords=keywords, prompt=prompt, language=language,
                 replace_existing=replace_existing,
             )
         finally:
-            if old_config is None:
-                os.environ.pop("RCLONE_CONFIG", None)
-            else:
-                os.environ["RCLONE_CONFIG"] = old_config
-            if old_cache is None:
-                os.environ.pop("SCRIBEFLOW_CACHE_DIR", None)
-            else:
-                os.environ["SCRIBEFLOW_CACHE_DIR"] = old_cache
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
 
 def main() -> int:

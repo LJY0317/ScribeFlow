@@ -27,17 +27,17 @@ class FakeClaims:
     def _snapshot(self, value):
         return copy.deepcopy(value)
 
-    def _new(self, now):
+    def _new(self, now, owner):
         self.revision += 1
-        result = _starting_document(now)
+        result = _starting_document(now, owner)
         result["updateTime"] = str(self.revision)
         return result
 
-    def create(self, key, now):
+    def create(self, key, now, *, owner=""):
         with self.lock:
             if key in self.documents:
                 return None
-            self.documents[key] = self._new(now)
+            self.documents[key] = self._new(now, owner)
             return self._snapshot(self.documents[key])
 
     def read(self, key):
@@ -45,13 +45,21 @@ class FakeClaims:
             value = self.documents.get(key)
             return self._snapshot(value) if value else None
 
-    def reset(self, key, previous, now):
+    def reset(self, key, previous, now, *, owner=""):
         with self.lock:
             current = self.documents.get(key)
             if not current or current["updateTime"] != previous["updateTime"]:
                 return None
-            self.documents[key] = self._new(now)
+            self.documents[key] = self._new(now, owner)
             return self._snapshot(self.documents[key])
+
+    def owns_operation(self, owner, operation):
+        with self.lock:
+            return any(
+                record["fields"]["operation"]["stringValue"] == operation
+                and record["fields"]["owner"]["stringValue"] == owner
+                for record in self.documents.values()
+            )
 
     def publish(self, key, claim, operation):
         with self.lock:
@@ -103,6 +111,15 @@ class DeduplicationTests(unittest.TestCase):
             next(iter(self.claims.documents)),
             hashlib.sha256(FILE_ID.encode()).hexdigest(),
         )
+
+    def test_shared_source_deduplicates_without_revealing_the_other_operation(self):
+        self.jobs.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a")
+        duplicate = self.jobs.start(FILE_ID, owner="google-b", drive_envelope="encrypted-b")
+        self.assertEqual(duplicate, {"status": "already_running", "duplicate": True})
+        self.backend.start.assert_called_once()
+        self.assertEqual(self.jobs.status(OPERATION, owner="google-a")["status"], "running")
+        with self.assertRaises(PermissionError):
+            self.jobs.status(OPERATION, owner="google-b")
 
     def test_completed_source_does_not_relaunch_paid_job(self):
         self.jobs.start(FILE_ID)

@@ -78,7 +78,7 @@ scribeflow transcribe '파일_ID' --json
 
 ### ChatGPT 원격 MCP 사용
 
-[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 전달합니다.
+[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 전달합니다. 연결 계정별 Drive 전체 검색은 [선택 설정](docs/cloud-run.md#연결-계정별-google-drive-접근)입니다.
 
 - `transcribe_audio`는 새 녹음을 전사합니다. 같은 파일의 작업을 반복 요청하면 기존 실행 상태를 반환하고, 기존 TXT를 보호합니다. 작업 실패 등을 다시 시도할 때 `retry=True`를 사용할 수 있습니다.
 - `retranscribe_audio`는 선택한 녹음을 현재 설정 모델로 다시 전사하고, 원본 SHA-256이 일치하는 기존 TXT의 내용만 갱신합니다. 같은 Drive 파일 ID와 링크가 유지됩니다. 새 전사에 OpenAI API 사용료가 발생합니다.

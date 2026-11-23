@@ -36,7 +36,7 @@ fi
 echo "ScribeFlow source: $LOCAL_SHA"
 gcloud projects describe "$GCP_PROJECT" --format='value(projectId)' >/dev/null
 BILLING="$(gcloud billing projects describe "$GCP_PROJECT" --format='value(billingEnabled)')"
-if [[ "${BILLING,,}" != "true" ]]; then
+if [[ "$BILLING" != [Tt][Rr][Uu][Ee] ]]; then
   echo "Billing is not enabled or cannot be verified for $GCP_PROJECT." >&2
   exit 1
 fi

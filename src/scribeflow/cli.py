@@ -3,16 +3,37 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .cache import cache_stats, clean_cache
 from .credentials import get_api_key, remove_saved_key, save_interactive
 from .engine import inspect_audio
 from .pipeline import cache_root, paths_for, scan_drive, transcribe
 from .quality import compare_transcripts
+
+
+async def _check_remote_connection(server: str, file_id: str | None) -> dict:
+    endpoint = urlsplit(server)
+    if endpoint.scheme != "https" or not endpoint.hostname or endpoint.username is not None:
+        raise ValueError("ScribeFlow의 HTTPS MCP 주소를 입력하세요.")
+    from fastmcp import Client
+    from fastmcp.exceptions import FastMCPError, McpError
+
+    try:
+        async with Client(server, auth="oauth") as client:
+            profile = await client.call_tool("get_profile", {})
+            result = {"profile": profile.structured_content}
+            if file_id:
+                metadata = await client.call_tool("check_drive_file", {"file_id": file_id})
+                result["drive_file"] = metadata.structured_content
+            return result
+    except (FastMCPError, McpError) as exc:
+        raise RuntimeError(f"MCP 연결 점검 실패: {exc}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,6 +58,10 @@ def main(argv: list[str] | None = None) -> int:
     scan.add_argument("--limit", type=int, default=50)
     scan.add_argument("--json", action="store_true", help="에이전트용 JSON 출력")
     scan.add_argument("--models", action="store_true", help="기존 TXT의 모델·스냅샷과 음성 파일 ID 조회")
+
+    remote = sub.add_parser("connection", help="MCP 연결 계정과 Drive 파일 권한 조회 (전사하지 않음)")
+    remote.add_argument("server", help="ScribeFlow의 HTTPS /mcp 주소")
+    remote.add_argument("--file-id", help="다운로드와 결과 저장 권한을 확인할 Drive 파일 ID")
 
     cache = sub.add_parser("cache", help="실패한 작업의 임시 캐시 확인·정리")
     cache.add_argument("action", choices=["status", "clean"])
@@ -80,6 +105,13 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     try:
+        if args.command == "connection":
+            try:
+                result = asyncio.run(_check_remote_connection(args.server, args.file_id))
+            except ImportError:
+                parser.exit(2, "MCP 연결 점검에는 scribeflow[cloud] 설치가 필요합니다.\n")
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
         if args.command == "auth":
             if args.action == "set":
                 save_interactive()

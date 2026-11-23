@@ -2,8 +2,8 @@
 
 A claim is scoped to a Google Drive file ID (not its filename or keywords).
 We reuse the gateway's existing Firestore database and authorized session.
-Firestore stores only the SHA-256 of the file ID and a Cloud Run operation ID;
-it never stores audio, transcripts, keywords, or OAuth tokens.
+Firestore stores the hashed file ID, operation, timestamps, and the requesting
+profile ID in linked mode. The claim contains no OAuth credentials.
 
 Firestore's atomic createDocument and updateTime preconditions provide safe
 claim/retry races even across distinct Cloud Run gateway instances.
@@ -29,7 +29,7 @@ UNKNOWN_SUBMISSION_RETRY_SECONDS = 2 * 60 * 60
 CLAIM_RETENTION_DAYS = 7
 
 
-def _starting_document(now: int) -> dict:
+def _starting_document(now: int, owner: str = "") -> dict:
     # The retention period is much longer than the Cloud Run task's one-hour limit.
     expires = (
         datetime.fromtimestamp(now, tz=timezone.utc)
@@ -38,6 +38,7 @@ def _starting_document(now: int) -> dict:
     return {"fields": {
         "started_at": {"integerValue": str(now)},
         "operation": {"stringValue": ""},
+        "owner": {"stringValue": owner},
         "expires_at": {"timestampValue": expires},
     }}
 
@@ -63,10 +64,10 @@ class FirestoreJobClaims:
     def _document_url(self, key: str) -> str:
         return self.collection_url + "/" + key
 
-    def create(self, key: str, now: int) -> dict | None:
+    def create(self, key: str, now: int, *, owner: str = "") -> dict | None:
         response = self.session.request(
             "POST", self.collection_url,
-            params={"documentId": key}, json=_starting_document(now),
+            params={"documentId": key}, json=_starting_document(now, owner),
             timeout=20,
         )
         if response.status_code == 409:  # atomic already-exists conflict
@@ -83,12 +84,12 @@ class FirestoreJobClaims:
         response.raise_for_status()
         return response.json()
 
-    def reset(self, key: str, previous: dict, now: int) -> dict | None:
+    def reset(self, key: str, previous: dict, now: int, *, owner: str = "") -> dict | None:
         """Compare-and-swap an explicitly retried failed or stale claim."""
         response = self.session.request(
             "PATCH", self._document_url(key),
             params={"currentDocument.updateTime": previous["updateTime"]},
-            json=_starting_document(now), timeout=20,
+            json=_starting_document(now, owner), timeout=20,
         )
         if response.status_code in (404, 409, 412):
             return None  # lost race; another caller owns this claim
@@ -105,10 +106,32 @@ class FirestoreJobClaims:
                 "started_at": fields["started_at"],
                 "operation": {"stringValue": operation},
                 "expires_at": fields["expires_at"],
+                "owner": fields.get("owner", {"stringValue": ""}),
             }},
             timeout=20,
         )
         response.raise_for_status()
+
+    def owns_operation(self, owner: str, operation: str) -> bool:
+        if not operation:
+            return False
+        response = self.session.request(
+            "POST", self.documents_url + ":runQuery", timeout=20,
+            json={"structuredQuery": {
+                "from": [{"collectionId": COLLECTION}],
+                "select": {"fields": [{"fieldPath": "owner"}]},
+                "where": {"fieldFilter": {
+                    "field": {"fieldPath": "operation"}, "op": "EQUAL",
+                    "value": {"stringValue": operation},
+                }},
+                "limit": 1,
+            }},
+        )
+        response.raise_for_status()
+        return any(
+            result.get("document", {}).get("fields", {}).get("owner", {}).get("stringValue") == owner
+            for result in response.json()
+        )
 
     def sweep_expired(self, now: int) -> None:
         """Delete a bounded batch on the first request of each UTC day."""
@@ -176,35 +199,38 @@ class DeduplicatingCloudRunJobs:
         self.claims = claims
         self.clock = clock
 
-    def status(self, operation: str) -> dict:
+    def status(self, operation: str, *, owner: str = "") -> dict:
+        if owner and not self.claims.owns_operation(owner, operation):
+            raise PermissionError("This operation does not belong to the connected account")
         return self.backend.status(operation)
 
     def _submit(
         self, key: str, claim: dict, file_id: str,
         keywords: tuple[str, ...], prompt: str, language: str, replace_existing: bool,
+        drive_envelope: str,
     ) -> dict:
         # If Cloud Run accepted this request but its response was lost, the
         # claim stays pending. This is intentionally not auto-retried.
         result = self.backend.start(
             file_id, keywords=keywords, prompt=prompt, language=language,
             replace_existing=replace_existing,
+            **({"drive_envelope": drive_envelope} if drive_envelope else {}),
         )
         try:
             self.claims.publish(key, claim, result["operation"])
         except Exception:
-            return {
-                **result,
-                "warning": (
-                    "Job started but its duplicate-protection record could "
-                    "not be confirmed. Do not submit again; check this operation."
-                ),
-            }
+            # Linked-mode status requires a confirmed owner record.
+            if drive_envelope:
+                result.pop("operation", None)
+            result["warning"] = (
+                "Job started but its duplicate-protection record could not be confirmed. Do not submit again."
+            )
         return result
 
     def start(
         self, file_id: str, keywords: list[str] | tuple[str, ...] | None = None,
         prompt: str = "", retry: bool = False, language: str = "auto",
-        *, replace_existing: bool = False,
+        *, replace_existing: bool = False, owner: str = "", drive_envelope: str = "",
     ) -> dict:
         if not isinstance(file_id, str) or not _FILE_ID.fullmatch(file_id):
             raise ValueError("A valid Google Drive file ID is required")
@@ -218,12 +244,15 @@ class DeduplicatingCloudRunJobs:
             logger.warning("Expired claim cleanup failed (%s)", type(exc).__name__)
 
         def submit(claim: dict) -> dict:
-            return self._submit(key, claim, file_id, normalized, prompt, language, replace_existing)
+            return self._submit(
+                key, claim, file_id, normalized, prompt, language, replace_existing, drive_envelope,
+            )
 
         key = hashlib.sha256(file_id.encode("utf-8")).hexdigest()
+        ownership = {"owner": owner} if owner else {}
         for _ in range(4):
             now = int(self.clock())
-            claim = self.claims.create(key, now)
+            claim = self.claims.create(key, now, **ownership)
             if claim is not None:
                 return submit(claim)
 
@@ -236,6 +265,11 @@ class DeduplicatingCloudRunJobs:
             except (KeyError, TypeError, ValueError):
                 age = 0  # invalid data fails closed
             operation = _recorded_operation(existing)
+            visible_operation = (
+                {"operation": operation}
+                if not owner or existing["fields"].get("owner", {}).get("stringValue") == owner
+                else {}
+            )
             if operation:
                 try:
                     current = self.backend.status(operation)
@@ -244,19 +278,19 @@ class DeduplicatingCloudRunJobs:
                     # A deliberate retry after the safety window is possible,
                     # but never automatically triggered.
                     if retry and age >= UNKNOWN_SUBMISSION_RETRY_SECONDS:
-                        claim = self.claims.reset(key, existing, now)
+                        claim = self.claims.reset(key, existing, now, **ownership)
                         if claim is not None:
                             return submit(claim)
                         continue
                     return {
                         "status": "operation_unavailable",
-                        "operation": operation,
+                        **visible_operation,
                         "duplicate": True,
                         "retry_requires_confirmation": True,
                     }
                 state = current.get("status")
                 if state in ("failed", "completed") and retry:
-                    claim = self.claims.reset(key, existing, now)
+                    claim = self.claims.reset(key, existing, now, **ownership)
                     if claim is not None:
                         return submit(claim)
                     continue
@@ -266,14 +300,14 @@ class DeduplicatingCloudRunJobs:
                         else "already_completed" if state == "completed"
                         else "already_running"
                     ),
-                    "operation": operation,
+                    **visible_operation,
                     "duplicate": True,
                 }
 
             # A previous request may have launched a job but lost the response
             # before publishing the operation. Never auto-release this claim.
             if retry and age >= UNKNOWN_SUBMISSION_RETRY_SECONDS:
-                claim = self.claims.reset(key, existing, now)
+                claim = self.claims.reset(key, existing, now, **ownership)
                 if claim is not None:
                     return submit(claim)
                 continue

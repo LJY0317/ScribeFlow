@@ -79,7 +79,7 @@ printf '%s' "$GOOGLE_CLIENT_SECRET" | gcloud secrets create scribeflow-google-cl
 unset GOOGLE_CLIENT_SECRET
 ```
 
-Google 로그인에는 `openid`·`userinfo.email`만 요청합니다. **Google Drive 파일 접근 권한은 별도 rclone 설정으로 처리**합니다. 로그인 이메일을 바꾸려면 Cloud Run의 `SCRIBEFLOW_GOOGLE_EMAIL` 설정과 Google OAuth 테스트 사용자 설정을 함께 변경하고 재인증해야 합니다.
+Google 로그인에는 신원 확인과 계정 표시를 위해 `openid`, `userinfo.email`, `userinfo.profile`을 요청합니다. 기본 단일 계정의 **Google Drive 파일 접근은 별도 rclone 설정**으로 처리합니다. 로그인 이메일을 바꾸려면 Cloud Run의 `SCRIBEFLOW_GOOGLE_EMAIL` 설정과 Google OAuth 테스트 사용자 설정을 함께 변경하고 재인증해야 합니다.
 
 ## 5. Cloud Run 배포 · ChatGPT 연결
 
@@ -104,6 +104,23 @@ ChatGPT의 **Plugins → 사용자 지정 MCP 서버 추가**(UI 명칭은 변�
 | 인증 | **OAuth** |
 
 ChatGPT의 접근 허용(Allow Access)을 승인하고 **4단계의 Google 계정으로 로그인**합니다. 다른 PC·Mac에서도 **같은 ChatGPT 계정 및 워크스페이스**라면 로컬 설치는 필요 없습니다. 다만 ChatGPT 앱·플러그인 제공 상태 및 OAuth 토큰 만료에 따라 앱 선택 또는 재인증이 필요할 수 있습니다.
+
+### 연결 계정별 Google Drive 접근
+
+기본 설정은 운영자 한 계정과 서버의 `gdrive:` 연결을 사용합니다. 각 로그인 계정의 Drive를 따로 사용하려면 Google Auth Platform에서 Google Drive API와 전체 Drive 범위(`https://www.googleapis.com/auth/drive`)를 설정하고, 필요한 Google 테스트 사용자를 등록합니다. 기존 앱 주소와 OAuth 클라이언트를 유지하고 아래 값을 설정해 5단계의 배포 절차를 수행합니다. 이미 서울·아이오와로 분리된 배포에서는 기존 Worker 리전과 OpenAI 주소도 명시합니다.
+
+```bash
+export SCRIBEFLOW_LINKED_DRIVE=1
+export SCRIBEFLOW_GOOGLE_ADDITIONAL_EMAILS='second@example.com third@example.com'
+```
+
+추가 이메일은 공백으로 구분합니다. 허용된 계정은 ChatGPT에서 ‘다른 계정 연결’을 선택하고 Google에서 Drive 접근을 승인하면 자기 Drive를 바로 사용할 수 있습니다. 배포는 Cloud Run 작업에 전달하는 단기 Drive 자격 증명을 암호화할 키를 Secret Manager에서 관리합니다. 연결 계정 모드의 새 작업은 해당 Google 계정의 권한만 사용하며 실행 시간은 최대 45분입니다. Google 동의 화면에서 계정마다 Drive 접근을 승인합니다. 기존 연결에는 새 범위에 대한 재연결이 필요합니다. ChatGPT가 이전 도구 목록을 사용하면 플러그인 설정에서 도구 목록을 새로고침합니다. 전환 전 진행 중인 작업은 완료 상태를 확인합니다. 연결 계정 모드에서는 소유자가 기록된 작업만 해당 계정에서 조회할 수 있습니다. [Google Drive 범위](https://developers.google.com/workspace/drive/api/guides/api-specific-auth) · [Google 인증 검증 예외](https://support.google.com/cloud/answer/13464323)
+
+Google Docs, Sheets, Slides의 본문 편집 API도 이 전체 Drive 권한을 허용합니다. 해당 기능을 추가할 때에는 대상 API를 활성화하고 편집 동작을 구현합니다. [Docs 편집](https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/batchUpdate#authorization-scopes) · [Sheets 편집](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate#authorization-scopes) · [Slides 편집](https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/batchUpdate#authorization-scopes)
+
+- ChatGPT가 표시에 사용하는 `get_profile`은 실제 이메일과 Google이 제공한 이름을 반환합니다. Google이 제공한 이미지 URL은 별도 읽기 전용 도구 `get_google_profile_photo`에서 확인할 수 있습니다.
+- `search_drive_files`는 일반 파일·폴더의 메타데이터를 반환하고 `nextPageToken`으로 계속 조회합니다. Google이 `incompleteSearch`를 표시하면 `include_shared_drives=false`로 개인 범위를 조회하고, `list_google_shared_drives`에서 얻은 ID로 공유 드라이브를 하나씩 조회할 수 있습니다.
+- `check_drive_file`은 녹음 다운로드와 원본 폴더의 TXT 저장 가능 여부를 확인합니다. 전사를 시작하거나 파일을 쓰지 않습니다. 같은 점검을 CLI에서 하려면 `scribeflow[cloud]`를 설치하고 `scribeflow connection HTTPS_MCP_URL --file-id DRIVE_FILE_ID`로 기존 브라우저 OAuth 흐름을 사용합니다.
 
 ## 6. 사용 · 시험 · 운영
 
@@ -235,7 +252,7 @@ gcloud artifacts repositories set-cleanup-policies scribeflow \
 1. **ChatGPT**: Plugins에서 ScribeFlow 연결을 삭제합니다. Google 계정의 [제3자 앱 연결](https://myaccount.google.com/connections)에서도 ScribeFlow 접근 권한을 취소할 수 있습니다.
 2. **Cloud Shell**: 저장소를 다시 클론하거나 기존 `~/ScribeFlow`에서 아래 스크립트를 실행합니다. 먼저 **dry-run으로 제거 대상 목록**을 확인합니다.
 
-   Gateway와 Job의 리전이 다르면, 스크립트는 Gateway 리전의 Job만 찾습니다. 완전 제거 시에는 `gcloud run jobs list --project="$GCP_PROJECT"`에서 전사 Job의 실제 리전을 확인하고, 해당 리전의 Job도 별도로 삭제합니다.
+   Gateway와 Job의 리전이 다르면 `SCRIBEFLOW_WORKER_REGION`에 운영 Job 리전을 지정합니다. 연결 계정 모드에서 생성한 작업 암호화 키도 제거 대상입니다.
 
    ```bash
    export GCP_PROJECT='YOUR_PROJECT_ID'

@@ -18,6 +18,15 @@ OPENAI_SECRET="${SCRIBEFLOW_OPENAI_SECRET:-scribeflow-openai-api-key}"
 RCLONE_SECRET="${SCRIBEFLOW_RCLONE_SECRET:-scribeflow-rclone-config}"
 GOOGLE_SECRET=scribeflow-google-client-secret
 SEED_SECRET=scribeflow-oauth-seed
+DRIVE_JOB_SECRET=scribeflow-drive-job-key
+LINKED_DRIVE="${SCRIBEFLOW_LINKED_DRIVE:-0}"
+ADDITIONAL_EMAILS="${SCRIBEFLOW_GOOGLE_ADDITIONAL_EMAILS:-}"
+if [[ "$LINKED_DRIVE" != 0 && "$LINKED_DRIVE" != 1 ]] ||
+   [[ "$ADDITIONAL_EMAILS" == *[,=]* ]] ||
+   [[ "$LINKED_DRIVE" != 1 && -n "$ADDITIONAL_EMAILS" ]]; then
+  echo "Use SCRIBEFLOW_LINKED_DRIVE=1 and a space-separated list of additional Google emails." >&2
+  exit 1
+fi
 WORKER_SA="scribeflow-worker@${GCP_PROJECT}.iam.gserviceaccount.com"
 GATEWAY_SA="scribeflow-gateway@${GCP_PROJECT}.iam.gserviceaccount.com"
 
@@ -36,6 +45,13 @@ done
 if ! gcloud secrets describe "$SEED_SECRET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
   python3 -c 'import secrets; print(secrets.token_urlsafe(48), end="")' | \
     gcloud secrets create "$SEED_SECRET" --project "$GCP_PROJECT" \
+      --replication-policy=automatic --data-file=- >/dev/null
+fi
+
+if [[ "$LINKED_DRIVE" == 1 ]] &&
+   ! gcloud secrets describe "$DRIVE_JOB_SECRET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+  python3 -c 'import secrets; print(secrets.token_urlsafe(32) + "=", end="")' |
+    gcloud secrets create "$DRIVE_JOB_SECRET" --project "$GCP_PROJECT" \
       --replication-policy=automatic --data-file=- >/dev/null
 fi
 
@@ -65,6 +81,17 @@ fi
 gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --member="serviceAccount:$GATEWAY_SA" --role=roles/datastore.user >/dev/null
 
+worker_secrets="/secrets/rclone.conf=${RCLONE_SECRET}:latest,OPENAI_API_KEY=${OPENAI_SECRET}:latest"
+gateway_secrets="SCRIBEFLOW_GOOGLE_CLIENT_SECRET=${GOOGLE_SECRET}:latest,SCRIBEFLOW_OAUTH_SEED=${SEED_SECRET}:latest"
+if [[ "$LINKED_DRIVE" == 1 ]]; then
+  for account in "$WORKER_SA" "$GATEWAY_SA"; do
+    gcloud secrets add-iam-policy-binding "$DRIVE_JOB_SECRET" --project "$GCP_PROJECT" \
+      --member="serviceAccount:$account" --role=roles/secretmanager.secretAccessor >/dev/null
+  done
+  worker_secrets+=",SCRIBEFLOW_DRIVE_JOB_KEY=${DRIVE_JOB_SECRET}:latest"
+  gateway_secrets+=",SCRIBEFLOW_DRIVE_JOB_KEY=${DRIVE_JOB_SECRET}:latest"
+fi
+
 worker_env="SCRIBEFLOW_CLOUD_MODE=worker,SCRIBEFLOW_RCLONE_CONFIG_SECRET=/secrets/rclone.conf,SCRIBEFLOW_TRANSCRIPTION_MODEL=${SCRIBEFLOW_TRANSCRIPTION_MODEL:-gpt-transcribe}"
 if [[ -n "${OPENAI_BASE_URL:-}" ]]; then
   worker_env+=",OPENAI_BASE_URL=${OPENAI_BASE_URL}"
@@ -74,7 +101,7 @@ gcloud run jobs deploy "$JOB" --image "$IMAGE" --project "$GCP_PROJECT" \
   --tasks 1 --parallelism 1 --max-retries 0 --task-timeout 3600s \
   --cpu 1 --memory 2Gi \
   --set-env-vars="$worker_env" \
-  --set-secrets="/secrets/rclone.conf=${RCLONE_SECRET}:latest,OPENAI_API_KEY=${OPENAI_SECRET}:latest"
+  --set-secrets="$worker_secrets"
 
 gcloud run jobs add-iam-policy-binding "$JOB" --project "$GCP_PROJECT" \
   --region "$WORKER_REGION" --member="serviceAccount:$GATEWAY_SA" \
@@ -90,8 +117,8 @@ gcloud run deploy "$SERVICE" --image "$IMAGE" --project "$GCP_PROJECT" \
   --region "$REGION" --service-account "$GATEWAY_SA" \
   --cpu 1 --memory 512Mi --min-instances 0 --max-instances 1 \
   --no-allow-unauthenticated \
-  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=gateway,GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},SCRIBEFLOW_REGION=${WORKER_REGION},SCRIBEFLOW_PREVIOUS_WORKER_REGION=${SCRIBEFLOW_PREVIOUS_WORKER_REGION:-},SCRIBEFLOW_JOB=${JOB},SCRIBEFLOW_MCP_URL=${URL},SCRIBEFLOW_GOOGLE_CLIENT_ID=${SCRIBEFLOW_GOOGLE_CLIENT_ID},SCRIBEFLOW_GOOGLE_EMAIL=${SCRIBEFLOW_GOOGLE_EMAIL}" \
-  --set-secrets="SCRIBEFLOW_GOOGLE_CLIENT_SECRET=${GOOGLE_SECRET}:latest,SCRIBEFLOW_OAUTH_SEED=${SEED_SECRET}:latest"
+  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=gateway,GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},SCRIBEFLOW_REGION=${WORKER_REGION},SCRIBEFLOW_PREVIOUS_WORKER_REGION=${SCRIBEFLOW_PREVIOUS_WORKER_REGION:-},SCRIBEFLOW_JOB=${JOB},SCRIBEFLOW_MCP_URL=${URL},SCRIBEFLOW_GOOGLE_CLIENT_ID=${SCRIBEFLOW_GOOGLE_CLIENT_ID},SCRIBEFLOW_GOOGLE_EMAIL=${SCRIBEFLOW_GOOGLE_EMAIL},SCRIBEFLOW_LINKED_DRIVE=${LINKED_DRIVE},SCRIBEFLOW_GOOGLE_ADDITIONAL_EMAILS=${ADDITIONAL_EMAILS}" \
+  --set-secrets="$gateway_secrets"
 
 # Cloud Run may return its hash-based alias from status.url, even when the
 # deterministic URL registered with Google OAuth is also valid. Do not treat
