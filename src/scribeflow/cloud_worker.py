@@ -58,7 +58,7 @@ def run_job() -> dict:
 def _result_summary(result: dict) -> dict:
     summary = {"result": result.get("status") or "unknown",
                "output_format": result.get("output_format") or os.environ.get("SCRIBEFLOW_OUTPUT_FORMAT", "txt")}
-    for field in ("model", "error_code"):
+    for field in ("model", "previous_model", "error_code"):
         if result.get(field):
             summary[field] = result[field]
     file_id = result.get("transcript_file_id")

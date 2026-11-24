@@ -1,4 +1,5 @@
 import hashlib
+import re
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from scribeflow import __version__
 from scribeflow.pipeline import transcribe
 from scribeflow.provenance import (
     TranscriptMetadata,
+    can_upgrade_transcript,
     source_fingerprint,
     stamp_transcript,
     strip_transcript_footer,
@@ -34,6 +36,7 @@ class ProvenanceTests(unittest.TestCase):
             "",
             r'<!-- ScribeFlow Metadata: Source: "녹음 \"A\" --\u003e\n.m4a"'
             " | Duration: 0:30:00.125000 | Size: 6,430,288 bytes | Detected languages: ko, en"
+            f" | Transcript SHA256: {hashlib.sha256((original + chr(10)).encode()).hexdigest()}"
             " | Provider: OpenAI | Model ID: gpt-transcribe"
             " | Snapshot: 미공개 | Transcribed at: 2026-11-21T05:30:00+00:00"
             f" | ScribeFlow version: {__version__} -->",
@@ -42,6 +45,27 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(source_fingerprint(stamped), sha)
         self.assertEqual(strip_transcript_footer(stamped), original + "\n")
         self.assertEqual(stamp_transcript(stamped, sha, metadata), stamped)
+
+    def test_upgrade_policy_only_accepts_known_provider_model_pairs_and_untouched_body(self):
+        sha = "a" * 64
+        for model, provider, expected in (
+            ("whisper-1", "OpenAI", True),
+            ("gpt-4o-transcribe", "OpenAI", True),
+            ("gpt-4o-mini-transcribe-2025-12-15", "OpenAI", True),
+            ("gpt-transcribe", "OpenAI", False),
+            ("gpt-4o-transcribe-diarize", "OpenAI", False),
+            ("unknown-new-model", "OpenAI", False),
+            ("whisper-1", "Other", False),
+        ):
+            with self.subTest(model=model, provider=provider):
+                stamped = stamp_transcript("speech", sha, TranscriptMetadata(
+                    "audio.m4a", 10, 1, provider, model, datetime.now(timezone.utc)))
+                self.assertEqual(can_upgrade_transcript(stamped, "gpt-transcribe"), expected)
+                self.assertFalse(can_upgrade_transcript(stamped, "unknown-new-model"))
+                self.assertFalse(can_upgrade_transcript(stamped.replace("speech", "edited"), "gpt-transcribe"))
+                legacy = re.sub(r" \| Transcript SHA256: [0-9a-f]{64}", "", stamped)
+                self.assertEqual(can_upgrade_transcript(legacy, "gpt-transcribe"), expected)
+        self.assertFalse(can_upgrade_transcript(stamp_transcript("speech", sha), "gpt-transcribe"))
 
     def test_source_fingerprint_is_last_line_and_idempotent(self):
         sha = hashlib.sha256(b"source").hexdigest()

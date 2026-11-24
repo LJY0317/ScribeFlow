@@ -25,7 +25,7 @@ cd ~/ScribeFlow
 
 원격 MCP는 사용자가 ChatGPT에서 연결한 Google 계정의 OAuth 권한으로 Drive API에 직접 접근합니다. 별도 rclone 설치·인증 파일·고정 Drive 계정 설정은 필요 없습니다. 배포 스크립트가 Google Drive API를 활성화하며, Google Auth Platform의 데이터 액세스에서 `https://www.googleapis.com/auth/drive` 범위를 설정합니다. 원본 다운로드와 최종 전사문 저장·갱신에는 해당 계정의 실제 Drive 권한이 필요합니다.
 
-로컬 CLI에서 직접 Drive 파일을 처리하려는 경우에만 [README의 rclone 연결 방법](../README.md)을 이용하세요.
+로컬 CLI에서도 동일한 Drive API 전사 코드를 사용하며, rclone은 로컬 OAuth 연결과 경로·폴더 탐색에만 필요합니다. [README의 연결 방법](../README.md)을 참고하세요.
 
 ## 3. OpenAI API 키 등록
 
@@ -111,15 +111,15 @@ Google Docs·Sheets·Slides 편집 및 파일 형식 변환은 기존 Google Dri
 
 ## 6. 사용 · 시험 · 운영
 
-- `transcribe_audio(file_id, keywords=None, prompt="", retry=False, language="auto", output_format="txt")`: Google Drive 음성 파일 ID **한 개**를 받아 전사 작업을 시작하며 OpenAI API 사용료가 발생합니다. 기본 TXT 외에 `output_format="md"`로 Markdown 한 개를 직접 저장할 수 있습니다. 필요한 경우 `keywords`에 최대 20개의 고유명사·전문용어를, `prompt`에 500자 이내의 짧은 녹음 맥락을 전달할 수 있습니다. 실제 발언을 지어내는 프롬프트를 제공하지 마세요. **동일 파일 ID의 중복 전사 요청**은 Firestore에 원자적으로 예약해 기존 Cloud Run 작업을 재사용합니다. 기존 작업이 완료·실패한 경우 `retry=True`를 명시해야 새 작업을 만들 수 있습니다. 원본과 SHA-256이 일치하는 인접 TXT 또는 MD가 이미 있으면 작업 기록이 만료된 뒤에도 유료 전사를 하지 않고 실제 기존 파일 정보를 반환합니다. 단, 이전 시도가 실행 여부를 확인할 수 없는 상태로 끝난 경우에는 2시간의 안전 유예시간 후에만 명시적 재시도가 가능합니다. 재시도는 API 사용료가 추가로 발생할 수 있으므로 반드시 기존 작업을 먼저 확인하세요.
+- `transcribe_audio(file_id, keywords=None, prompt="", retry=False, language="auto", output_format="txt")`: Google Drive 음성 파일 ID **한 개**를 받아 전사 작업을 시작하며 OpenAI API 사용료가 발생합니다. 기본 TXT 외에 `output_format="md"`로 Markdown 한 개를 직접 저장할 수 있습니다. 필요한 경우 `keywords`에 최대 20개의 고유명사·전문용어를, `prompt`에 500자 이내의 짧은 녹음 맥락을 전달할 수 있습니다. 실제 발언을 지어내는 프롬프트를 제공하지 마세요. **동일 파일 ID의 실행 중 전사 요청**은 Firestore에 원자적으로 예약해 기존 Cloud Run 작업을 재사용합니다. 성공한 작업이 있어도 새 요청은 현재 Drive·Worker 모델을 다시 확인합니다. 실패한 작업의 재시도에는 `retry=True`를 명시해야 합니다. 원본 SHA-256이 일치하는 기존 TXT·MD는 [공통 모델 갱신 정책](../README.md#기존-전사문과-모델-갱신-정책-cli-mcp-공통)에 따라 재사용(`skipped_existing`)하거나 지원되는 상위 모델로 갱신(`upgraded`)합니다. 갱신은 기존 형식·ID·위치를 유지하고 유료 API 호출이 발생합니다. 단, 이전 시도가 실행 여부를 확인할 수 없는 상태로 끝난 경우에는 2시간의 안전 유예시간 후에만 명시적 재시도가 가능합니다. 재시도는 API 사용료가 추가로 발생할 수 있으므로 반드시 기존 작업을 먼저 확인하세요.
 - `language` 옵션: 자동 감지(`auto`)가 기본값입니다. 한국어 등 입력 언어를 아는 경우에는 `ko`, `en`과 같은 힌트를 지정할 수 있습니다. 감지 실패 시 추가 재전사나 자동 재인코딩은 수행하지 않습니다. 큰 다중 오디오 트랙은 일부 트랙 유실을 막기 위해 명시적으로 중단합니다.
 - `retranscribe_audio(file_id, keywords=None, prompt="", language="auto", transcript_file_id="", output_format="txt")`: 선택한 녹음을 다시 전사해 기존 전사문을 교체합니다. `output_format="md"`면 Markdown을 대상으로 합니다. 다른 폴더로 이동한 전사문은 `transcript_file_id`에 해당 Drive 파일 ID를 명시할 수 있습니다. 전사문 말꼬리의 원본 SHA-256이 현재 오디오와 일치해야 유료 전사를 시작하며, 기존 파일 ID 및 현재 폴더는 유지됩니다. 생략 시 원본 폴더의 동명 전사문을 우선 확인합니다. 이전 내용은 [Drive 버전 보관 정책](https://developers.google.com/workspace/drive/api/guides/manage-revisions)의 적용을 받습니다. 원격 MCP는 현재 연결된 Google 계정의 권한으로 직접 갱신합니다.
 - 원본 폴더에 선택 형식의 동명 전사문이 없으면 Drive에서 이름과 원본 SHA-256이 일치하는 후보 한 개만 갱신합니다. 여러 후보 또는 이름이 바뀐 파일은 `transcript_file_id`로 지정하세요. 원격 MCP에서는 원본 폴더에 접근할 수 없어도 원본을 다운로드하고 지정한 전사문을 편집할 수 있으면 재전사 가능합니다.
-- `get_transcription_status(operation)`: 실행 상태(`running` / `completed` / `failed`)와 종료 결과(`result`, 실제 `output_format`, `transcript_file_id`, `transcript_url`, `model` 또는 `error_code`)를 조회합니다. 결과가 보관되지 않은 이전 실행이나 강제 종료에서는 상태만 반환할 수 있습니다. 조회는 새 전사를 시작하지 않습니다.
+- `get_transcription_status(operation)`: 실행 상태(`running` / `completed` / `failed`)와 종료 결과(`result`, 실제 `output_format`, `transcript_file_id`, `transcript_url`, `model`, 자동 갱신 시 `previous_model` 또는 `error_code`)를 조회합니다. 결과가 보관되지 않은 이전 실행이나 강제 종료에서는 상태만 반환할 수 있습니다. 조회는 새 전사를 시작하지 않습니다.
 
-**모델 변경(관리자용):** Cloud Run 콘솔에서 `scribeflow-transcribe` Job의 환경변수 `SCRIBEFLOW_TRANSCRIPTION_MODEL`에 해당 OpenAI 전사 API에서 사용할 모델 ID를 설정합니다. 기본값은 `gpt-transcribe`입니다. 현재 SDK의 전사 API·언어 및 키워드 매개변수와 호환되는 모델을 지정하세요. 고정 스냅샷 ID가 제공되면 직접 설정할 수 있습니다. 다음 실행부터 적용되며 모델 변경만으로 기존 TXT를 갱신하지 않습니다. 품질을 확인한 뒤 ChatGPT에서 파일을 지정해 재전사를 요청하세요. 모델 ID와 스냅샷이 같은 전사본의 내부 변경 이력은 TXT에서 판별할 수 없습니다.
+**모델 변경(관리자용):** Cloud Run 콘솔에서 `scribeflow-transcribe` Job의 환경변수 `SCRIBEFLOW_TRANSCRIPTION_MODEL`에 해당 OpenAI 전사 API에서 사용할 모델 ID를 설정합니다. 기본값은 `gpt-transcribe`입니다. 현재 SDK의 전사 API·언어 및 키워드 매개변수와 호환되는 모델을 지정하세요. 고정 스냅샷 ID가 제공되면 직접 설정할 수 있습니다. 다음 실행부터 적용되며 모델 변경 자체로 전체 Drive를 갱신하지 않습니다. 사용자가 특정 파일의 전사를 요청하면 공통 정책에서 명시한 상위 모델 관계를 확인해 갱신합니다. 알려지지 않은 모델 변경은 품질 확인 후 명시적으로 재전사를 요청하세요. 모델 ID와 스냅샷이 같은 전사본의 내부 변경 이력은 TXT에서 판별할 수 없습니다.
 
-**Drive 파일 식별:** 원격 MCP는 원본 ID로 다운로드하고, 원본의 실제 부모 ID로 신규 전사문을 저장하거나 지정한 전사문 ID로 갱신합니다. 이름만으로 중복 파일을 선택하지 않습니다. 로컬 CLI의 rclone 연동은 기존 경로 조회를 사용하며 선택한 ID·해시 및 이름 중복을 확인합니다. 두 모드 모두 게시 전 원본·갱신 대상의 변경을 확인합니다.
+**Drive 파일 식별:** 원격 MCP는 원본 ID로 다운로드하고, 원본의 실제 부모 ID로 신규 전사문을 저장하거나 지정한 전사문 ID로 갱신합니다. 이름만으로 중복 파일을 선택하지 않습니다. 로컬 CLI도 같은 `drive_transcription.transcribe_drive` 코드와 Drive API를 사용합니다. rclone은 로컬 OAuth와 경로 탐색에만 쓰이며 파일 전송·갱신 대체 경로는 없습니다. 두 모드 모두 게시 전 원본·갱신 대상의 변경을 확인합니다.
 
 **중복 실행과 결과:** 기존 `scribeflow-oauth` 데이터베이스의 `scribeflow_job_claims`에 원본 ID의 해시, 작업 ID·형식·소유자와 실행별 최소 결과(파일 ID, 형식, 모델 또는 오류 코드)를 기록합니다. Worker에는 이 전용 DB에 한정된 권한을 부여합니다. 결과와 예약은 7일 후 만료되며 UTC 기준 하루 첫 전사 요청에서 최대 100개를 지웁니다. 남은 만료 항목은 이후 요청에서 추가로 정리합니다. 녹음 내용·인증 토큰은 결과 기록에 저장하지 않습니다. [Firestore 할당량](https://docs.cloud.google.com/firestore/quotas)
 
@@ -129,9 +129,9 @@ Google Docs·Sheets·Slides 편집 및 파일 형식 변환은 기존 Google Dri
 bash scripts/disable-claim-ttl.sh
 ```
 
-7일 지난 예약이 정리되면 동일 파일 ID의 새 요청도 Cloud Run 작업 하나를 생성할 수 있습니다. 일반 전사 요청은 기존 TXT·MD를 보호합니다. 이전 작업의 상태 조회가 불가능할 때에는 최소 2시간 후에 명시적 재시도 또는 재전사가 가능합니다.
+완료된 실행 이후의 새 요청도 Cloud Run 작업 하나를 생성해 현재 상태를 확인합니다. 일반 전사 요청은 공통 모델 갱신 정책에 해당하는 기존 TXT·MD만 갱신하고 그 외에는 보호합니다. 이전 작업의 상태 조회가 불가능할 때에는 최소 2시간 후에 명시적 재시도 또는 재전사가 가능합니다.
 
-ID는 `https://drive.google.com/file/d/FILE_ID/view`에서 확인합니다. MCP 검색 도구 또는 기존 Google Drive 플러그인에서 파일 ID를 찾을 수 있습니다. 이미 동명 전사문이 있으면 SHA-256 일치 시 `skipped_existing`, 미확인·불일치 시에도 덮어쓰지 않습니다.
+ID는 `https://drive.google.com/file/d/FILE_ID/view`에서 확인합니다. MCP 검색 도구 또는 기존 Google Drive 플러그인에서 파일 ID를 찾을 수 있습니다. 동명 전사문이 있으면 원본 SHA-256과 모델을 확인합니다. 지원되는 상위 모델 갱신에만 `upgraded`가 반환되고, 재사용 시 `skipped_existing`, 출처 미확인·불일치 시에는 덮어쓰지 않습니다.
 
 **실전 검증 방법:** 원본 음성만 있고 동명 TXT가 없는 파일로 전사 요청 → `completed` 확인 → 원본 Drive 폴더의 **새 TXT 파일 ID·생성시각·본문** 확인. 기존 TXT를 시험 삼아 제거한다면 **휴지통으로 이동**해 복구 가능한 상태로 두세요. 실제 API 호출은 비용이 발생합니다.
 
@@ -156,7 +156,7 @@ bash scripts/update-cloud-run.sh
 
 ### 전사 엔진만 재배포하기
 
-MCP 도구 정의나 Gateway 계약이 바뀌지 않은 전사 엔진 변경만 적용할 때는 `bash scripts/update-cloud-run.sh --worker-only`를 사용합니다. 기존 `deploy-worker-only.sh`도 같은 명령을 실행합니다. 일반 업데이트에서는 Gateway와 Worker 모두 동일한 이미지로 맞추는 것이 기본입니다. `preflight-cloud-run.sh`는 `update-cloud-run.sh --dry-run`과 같습니다.
+일반 업데이트에서는 Gateway와 Worker를 GitHub의 같은 커밋 이미지로 함께 갱신합니다. `--worker-only`는 Gateway 계약이 바뀌지 않은 경우의 제한적인 운영·시험용 옵션입니다. 모델 갱신·중복 처리 정책이 변경된 릴리스는 두 리소스를 함께 갱신하세요. `preflight-cloud-run.sh`는 `update-cloud-run.sh --dry-run`과 같습니다.
 
 ### 저비용 운영 구성
 

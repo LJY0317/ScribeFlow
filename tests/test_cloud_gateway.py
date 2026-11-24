@@ -42,14 +42,14 @@ class CloudGatewayTests(unittest.TestCase):
                     with self.assertRaises((KeyError, ValueError)):
                         create_server()
 
-    def test_replacement_is_a_separate_destructive_tool(self):
+    def test_automatic_upgrade_and_explicit_replacement_are_marked_destructive(self):
         server = self.server()
         tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
         self.assertEqual(set(tools), {"get_profile", "get_google_profile_photo", "search_drive_files",
                                     "list_google_shared_drives", "check_drive_file", "transcribe_audio",
                                     "retranscribe_audio", "get_transcription_status"})
         self.assertEqual(tools["get_profile"].meta["openai/profile"], True)
-        self.assertFalse(tools["transcribe_audio"].annotations.destructive_hint)
+        self.assertTrue(tools["transcribe_audio"].annotations.destructive_hint)
         self.assertTrue(tools["retranscribe_audio"].annotations.destructive_hint)
         self.assertIn("transcript_file_id", tools["retranscribe_audio"].parameters["properties"])
 

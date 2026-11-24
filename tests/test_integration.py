@@ -80,10 +80,13 @@ class IntegratedTranscriptionTests(unittest.TestCase):
             self.assertEqual(source_fingerprint(text), hashlib.sha256(original).hexdigest())
             self.assertIn(
                 'Source: "test-recording.m4a" | Duration: 0:00:05'
-                f" | Size: {len(original):,} bytes | Detected languages: ko, en | Provider: OpenAI"
-                " | Model ID: gpt-transcribe | Snapshot: 미공개",
+                f" | Size: {len(original):,} bytes | Detected languages: ko, en",
                 text,
             )
+            self.assertIn(" | Provider: OpenAI | Model ID: gpt-transcribe | Snapshot: 미공개", text)
+            self.assertIn(" | Transcript SHA256: " + hashlib.sha256(
+                text.split("<!-- ScribeFlow Metadata:", 1)[0].encode("utf-8")
+            ).hexdigest(), text)
             self.assertIn("Detected languages: ko, en", text)
             score = compare_transcripts("전사 구간 1", text, text)
             self.assertEqual(score["baseline"]["cer"], 0)

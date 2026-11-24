@@ -191,13 +191,16 @@ def create_server():
             "language defaults to automatic detection ('auto'); use 'ko', 'en', "
             "or another supported code to hint a known language. "
             "output_format selects one output file: 'txt' (default, plain text) or 'md' (Markdown). "
-            "Existing matching adjacent TXT or Markdown transcripts are reused without another OpenAI request. "
-            "Existing transcripts are not overwritten. Repeated requests for "
-            "the same file reuse the existing job. Explicit retry=True "
-            "is required to repeat a completed/failed job or stale submission; "
-            "retrying can incur new API charges. Do not retranscribe solely to convert an existing transcript to another format."
+            "Matching adjacent TXT or Markdown transcripts are reused without another OpenAI request unless "
+            "their recorded OpenAI model has a supported upgrade to the configured model. "
+            "A supported upgrade re-transcribes and updates the existing file in its original format and location, "
+            "preserving its ID; detected manual edits, unknown models and source mismatches are not overwritten. "
+            "Legacy transcripts without a body checksum cannot be checked for prior manual edits. "
+            "Concurrent requests for the same audio reuse the active job; later requests recheck current Drive/model state. "
+            "Explicit retry=True is required to repeat a failed job or stale submission. "
+            "Do not retranscribe solely to convert an existing transcript to another format."
         ),
-        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True),
     )
     def transcribe_audio(
         file_id: str, keywords: list[str] | None = None, prompt: str = "",

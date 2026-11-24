@@ -1,7 +1,8 @@
-"""Provenance stored in the footer of the final TXT."""
+"""Provenance and the shared model-upgrade policy for final transcripts."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -19,6 +20,47 @@ _MODEL_DETAILS = re.compile(
     r" \| Snapshot: (?P<snapshot>[^|]+) \| Transcribed at: (?P<transcribed_at>[^|]+)"
     r" \| ScribeFlow version: (?P<scribeflow_version>[^|]+)\Z"
 )
+
+
+# Known, provider-documented migrations for ordinary file transcription only.
+# Do not rank arbitrary model names, dates, or special-purpose diarization models.
+# https://developers.openai.com/api/docs/guides/speech-to-text
+_MODEL_UPGRADES = {
+    "gpt-transcribe": frozenset({
+        "whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe",
+        "gpt-4o-mini-transcribe-2025-12-15", "gpt-4o-mini-transcribe-2025-03-20",
+    }),
+}
+_BODY_DIGEST = re.compile(r" \| Transcript SHA256: ([0-9a-f]{64})(?= \|)")
+
+
+def _body_sha256(body: str) -> str:
+    # Native Windows newline translation must not count as a manual edit.
+    return hashlib.sha256(body.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+
+def model_upgrade_recommended(details: dict | None, current_model: str) -> bool:
+    """Only explicitly supported upgrade pairs qualify; unknown models are kept."""
+    return bool(
+        details and details.get("provider") == "OpenAI"
+        and details.get("model_id") in _MODEL_UPGRADES.get(current_model, ())
+    )
+
+
+def can_upgrade_transcript(transcript: str, current_model: str) -> bool:
+    """Called only after matching the original audio SHA-256.
+
+    Legacy complete metadata has no body hash: an explicit request to transcribe
+    the selected audio may upgrade it, but its prior manual edits are unknowable.
+    For newly stamped transcripts, a changed body prevents automatic replacement.
+    """
+    if not model_upgrade_recommended(transcript_model(transcript), current_model):
+        return False
+    footer = _FOOTER.search(transcript)
+    digest = _BODY_DIGEST.search(footer["metadata"] or "")
+    if digest is None:
+        return " | Transcript SHA256:" not in (footer["metadata"] or "")
+    return digest[1] == _body_sha256(transcript[:footer.start()])
 
 
 @dataclass(frozen=True)
@@ -79,6 +121,7 @@ def stamp_transcript(
             f"<!-- ScribeFlow Metadata: Source: {filename} | Duration: {duration}"
             f" | Size: {metadata.source_size_bytes:,} bytes"
             f" | Detected languages: {detected_languages}"
+            f" | Transcript SHA256: {_body_sha256(transcript + separator)}"
             f" | Provider: {metadata.provider} | Model ID: {metadata.model_id}"
             f" | Snapshot: {metadata.snapshot or '미공개'} | Transcribed at: {completed_at}"
             f" | ScribeFlow version: {__version__} -->\n"

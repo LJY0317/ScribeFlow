@@ -90,7 +90,7 @@ class FirestoreJobClaims:
         return response.json()
 
     def reset(self, key: str, previous: dict, now: int, *, owner: str = "", output_format: str = "txt") -> dict | None:
-        """Compare-and-swap an explicitly retried failed or stale claim."""
+        """Compare-and-swap a terminal or explicitly retried stale claim."""
         response = self.session.request(
             "PATCH", self._document_url(key),
             params={"currentDocument.updateTime": previous["updateTime"]},
@@ -215,7 +215,7 @@ class FirestoreJobClaims:
 
 
 class DeduplicatingCloudRunJobs:
-    """Submit at most one job per source until an explicit terminal/stale retry.
+    """Serialize active jobs; successful requests recheck the actual Drive state.
 
     Ambiguous Cloud Run request errors deliberately leave a reservation behind
     instead of issuing a second possibly billable request.
@@ -342,7 +342,10 @@ class DeduplicatingCloudRunJobs:
                         "retry_requires_confirmation": True,
                     }
                 state = current.get("status")
-                if state in ("failed", "completed") and retry:
+                # A completed receipt is not the current Drive/model state.
+                # Recheck in the worker using its configured model and the
+                # actual transcript, without allowing concurrent paid jobs.
+                if state == "completed" or (state == "failed" and retry):
                     claim = self.claims.reset(key, existing, now, **ownership)
                     if claim is not None:
                         return submit(claim)
@@ -357,7 +360,6 @@ class DeduplicatingCloudRunJobs:
                 return {
                     "status": (
                         "previous_failed" if state == "failed"
-                        else "already_completed" if state == "completed"
                         else "already_running"
                     ),
                     **visible_operation,

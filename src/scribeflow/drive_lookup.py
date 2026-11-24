@@ -1,11 +1,8 @@
-"""Best-effort, read-only Drive ID lookup using an existing rclone OAuth token.
+"""Drive API transcript lookup/update and optional local CLI OAuth/path adapter.
 
-Only the Cloud Run worker's private RCLONE_CONFIG copy is inspected. Credentials
-are never logged or persisted by this module. The caller must verify that the
-resulting rclone path resolves back to the requested file ID before using it.
-
-A missing/expired token, inaccessible parent, or unsupported rclone config is
-not fatal: the caller can fall back to the existing rclone directory walk.
+Cloud Run uses the connected account directly. The local CLI may reuse an
+existing rclone OAuth access token for the same ID-based Drive API workflow.
+Credentials are never logged or persisted by this module.
 """
 
 from __future__ import annotations

@@ -128,23 +128,22 @@ class DeduplicationTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.jobs.status(OPERATION, owner="google-b")
 
-    def test_completed_source_does_not_relaunch_paid_job(self):
+    def test_completed_source_rechecks_current_drive_and_model(self):
         self.start(FILE_ID)
         self.backend.status.return_value = {
             "status": "completed", "operation": OPERATION,
         }
-        self.assertEqual(self.start(FILE_ID)["status"], "already_completed")
-        self.backend.start.assert_called_once()
+        self.assertEqual(self.start(FILE_ID)["status"], "submitted")
+        self.assertEqual(self.backend.start.call_count, 2)
 
     def test_actual_result_format_and_owner_survive_retranscription(self):
         self.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a")
         self.backend.status.return_value = {"status": "completed", "operation": OPERATION, "execution": "execution-a"}
         receipt = {"result": "created", "output_format": "txt", "transcript_file_id": "output-id"}
         self.claims.results["execution-a"] = ("google-a", receipt)
-        duplicate = self.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a", output_format="md")
-        self.assertEqual(duplicate["requested_output_format"], "md")
-        self.assertEqual(duplicate["output_format"], "txt")
-        self.assertEqual(duplicate["transcript_file_id"], "output-id")
+        previous = self.jobs.status(OPERATION, owner="google-a")
+        self.assertEqual(previous["output_format"], "txt")
+        self.assertEqual(previous["transcript_file_id"], "output-id")
         self.backend.start.assert_called_once()
         self.backend.start.return_value = {"status": "submitted", "operation": OPERATION + "-new"}
         self.start(FILE_ID, retry=True, replace_existing=True, owner="google-a", drive_envelope="encrypted-a")
@@ -159,19 +158,19 @@ class DeduplicationTests(unittest.TestCase):
             "status": "completed", "operation": OPERATION, "result_available": False,
         })
 
-    def test_completed_job_requires_explicit_retry(self):
+    def test_completed_job_rechecks_without_explicit_retry(self):
         self.start(FILE_ID)
         self.backend.status.return_value = {
             "status": "completed", "operation": OPERATION,
         }
         self.assertEqual(
-            self.start(FILE_ID)["status"], "already_completed",
+            self.start(FILE_ID)["status"], "submitted",
         )
-        self.backend.start.assert_called_once()
+        self.assertEqual(self.backend.start.call_count, 2)
         self.assertEqual(
             self.start(FILE_ID, retry=True)["status"], "submitted",
         )
-        self.assertEqual(self.backend.start.call_count, 2)
+        self.assertEqual(self.backend.start.call_count, 3)
 
     def test_explicit_retry_after_failure_replaces_claim(self):
         self.start(FILE_ID)

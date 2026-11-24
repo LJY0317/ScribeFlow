@@ -3,13 +3,15 @@
 import hashlib
 import tempfile
 import unittest
+from datetime import datetime, timezone
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 from scribeflow.drive_transcription import transcribe_drive, DriveTranscriptionError
 from scribeflow.linked_drive import DriveCredential
-from scribeflow.provenance import stamp_transcript
+from scribeflow.provenance import TranscriptMetadata, stamp_transcript, transcript_model
 
 
 class DriveTranscriptionTests(unittest.TestCase):
@@ -26,7 +28,9 @@ class DriveTranscriptionTests(unittest.TestCase):
         self.source = {"id": self.audio_id, "name": "sample.m4a", "parents": [self.folder],
                        "sha256Checksum": self.sha, "capabilities": {"canDownload": True}}
         self.old_text = stamp_transcript("Old speech", self.sha).encode()
-        self.new_text = stamp_transcript("New speech", self.sha).encode()
+        self.metadata = TranscriptMetadata("sample.m4a", len(self.audio), 1, "OpenAI",
+                                           "gpt-transcribe", datetime.now(timezone.utc))
+        self.new_text = stamp_transcript("New speech", self.sha, self.metadata).encode()
         self.target = {"id": self.text_id, "name": "sample.txt", "mimeType": "text/plain",
                        "sha256Checksum": hashlib.sha256(self.old_text).hexdigest(),
                        "capabilities": {"canEdit": True}}
@@ -71,6 +75,64 @@ class DriveTranscriptionTests(unittest.TestCase):
         self.assertEqual(result["transcript_file_id"], self.text_id)
         self.download_file.assert_not_called()
         self.transcribe.assert_not_called()
+        self.create_transcript.assert_not_called()
+
+    def existing_model(self, model, *, edited=False, legacy=False, name="sample.txt"):
+        contents = stamp_transcript("Old speech", self.sha, replace(self.metadata, model_id=model))
+        if edited:
+            contents = contents.replace("Old speech", "Human correction")
+        if legacy:
+            import re
+            contents = re.sub(r" \| Transcript SHA256: [0-9a-f]{64}", "", contents)
+        self.old_text = contents.encode()
+        self.read_transcript.return_value = self.old_text
+        self.target.update(name=name, sha256Checksum=hashlib.sha256(self.old_text).hexdigest(),
+                           parents=[self.folder])
+        self.sibling_transcripts.return_value = [self.target]
+
+    def test_known_legacy_model_is_upgraded_in_place_even_if_other_format_requested(self):
+        self.existing_model("whisper-1", legacy=True, name="sample.md")
+        result = self.run_drive()
+        self.assertEqual(result["status"], "upgraded")
+        self.assertEqual(result["previous_model"], "whisper-1")
+        self.assertEqual(result["model"], "gpt-transcribe")
+        self.assertEqual(result["output_format"], "md")
+        self.assertEqual(result["transcript_file_id"], self.text_id)
+        self.update_transcript.assert_called_once_with(self.text_id, "test", self.new_text, content_type="text/markdown")
+        self.create_transcript.assert_not_called()
+
+    def test_same_unknown_diarized_or_edited_model_is_not_replaced(self):
+        for model, edited in (("gpt-transcribe", False), ("unknown-model", False),
+                              ("gpt-4o-transcribe-diarize", False), ("whisper-1", True)):
+            with self.subTest(model=model, edited=edited):
+                self.existing_model(model, edited=edited)
+                self.assertEqual(self.run_drive()["status"], "skipped_existing")
+        self.transcribe.assert_not_called()
+        self.update_transcript.assert_not_called()
+
+    def test_already_current_alternate_format_avoids_upgrading_older_requested_format(self):
+        self.existing_model("whisper-1")
+        alt = {**self.target, "name": "sample.md", "id": "alt_" + "a" * 25}
+        self.sibling_transcripts.return_value = [self.target, alt]
+        self.read_transcript.side_effect = lambda file_id, *args, **kwargs: (
+            self.new_text if file_id == alt["id"] else self.old_text)
+        result = self.run_drive()
+        self.assertEqual(result["status"], "skipped_existing")
+        self.assertEqual(result["transcript_file_id"], alt["id"])
+        self.transcribe.assert_not_called()
+
+    def test_uneditable_known_old_model_is_not_billed(self):
+        self.existing_model("whisper-1")
+        self.target["capabilities"]["canEdit"] = False
+        self.assertEqual(self.run_drive()["status"], "skipped_existing")
+        with self.assertRaises(PermissionError):
+            self.run_drive(replace_existing=True)
+        self.transcribe.assert_not_called()
+
+    def test_moved_matching_transcript_is_found_for_explicit_replacement(self):
+        self.find_transcripts_by_name.return_value = [self.text_id]
+        self.assertEqual(self.run_drive(replace_existing=True)["status"], "replaced")
+        self.update_transcript.assert_called_once()
         self.create_transcript.assert_not_called()
 
     def test_explicit_replacement_works_without_accessible_source_parent(self):

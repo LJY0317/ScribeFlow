@@ -8,13 +8,13 @@ from urllib.error import HTTPError
 
 from .cloud_run import normalize_output_format
 from .drive_lookup import find_transcripts_by_name, read_transcript, update_transcript
-from .engine import SUPPORTED_AUDIO_SUFFIXES, hash_file
+from .engine import SUPPORTED_AUDIO_SUFFIXES, configured_model, hash_file
 from .linked_drive import (
     DriveCredential, can_add_to_folder, create_transcript, download_file,
     file_metadata, sibling_transcripts,
 )
 from .pipeline import transcribe
-from .provenance import source_fingerprint, transcript_model
+from .provenance import can_upgrade_transcript, source_fingerprint, transcript_model
 
 
 class DriveTranscriptionError(ValueError):
@@ -29,7 +29,8 @@ def _output(record: dict, status: str, model: str | None = None) -> dict:
     file_id = record["id"]
     return {"ok": True, "status": status, "output_format": Path(record["name"]).suffix.lower()[1:],
             "transcript_file_id": file_id, "url": f"https://drive.google.com/file/d/{file_id}/view",
-            "model": model}
+            "model": model, "transcript_name": record["name"],
+            "transcript_parent_id": (record.get("parents") or [None])[0]}
 
 
 def _read_candidate(credential: DriveCredential, record: dict) -> tuple[bytes, str | None] | None:
@@ -74,7 +75,7 @@ def _same_audio(before: dict, after: dict, source_sha: str) -> bool:
 
 def transcribe_drive(credential: DriveCredential, file_id: str, private: Path, *,
                      output_format: str = "txt", replace_existing: bool = False,
-                     transcript_file_id: str = "", **hints) -> dict:
+                     transcript_file_id: str = "", output_name: str | None = None, **hints) -> dict:
     """Use the authenticated Drive ID from download through publication."""
     output_format = normalize_output_format(output_format)
     source = file_metadata(credential, file_id)
@@ -85,8 +86,12 @@ def transcribe_drive(credential: DriveCredential, file_id: str, private: Path, *
     if not source.get("capabilities", {}).get("canDownload"):
         raise PermissionError("The connected account cannot download the recording")
     stem = name[:len(name) - len(suffix)]
-    desired = stem + "." + output_format
-    names = (desired,) if replace_existing else (stem + ".txt", stem + ".md")
+    desired = output_name or stem + "." + output_format
+    if output_name and (Path(desired).name != desired or Path(desired).suffix.lower() != "." + output_format):
+        raise ValueError("Output name must be a filename in the requested format")
+    names = (desired,) if replace_existing or output_name else (stem + ".txt", stem + ".md")
+    model = configured_model()
+    previous_model = None
     # Local staging has a safe filename; the provenance keeps the actual Drive name.
     audio = private / ("audio" + suffix)
     source_sha = source.get("sha256Checksum")
@@ -126,12 +131,22 @@ def transcribe_drive(credential: DriveCredential, file_id: str, private: Path, *
                                               "No matching existing transcript was found.")
             selected, old_data = match
         else:
-            preferred = [match for match in matches if match[0]["name"] == desired]
-            match = _one(preferred or matches)
+            # Avoid a paid upgrade if any verified existing result is already
+            # reusable (same, unknown, higher, or manually edited model output).
+            reusable = [match for match in matches
+                        if not can_upgrade_transcript(match[1].decode("utf-8-sig"), model)]
+            candidates = reusable or matches
+            preferred = [match for match in candidates if match[0]["name"] == desired]
+            match = _one(preferred or candidates)
             if match:
                 record, data = match
-                return _output(record, "skipped_existing", (transcript_model(data.decode("utf-8-sig")) or {}).get("model_id"))
-            if any(record["name"] == desired for record in siblings):
+                previous_model = (transcript_model(data.decode("utf-8-sig")) or {}).get("model_id")
+                if reusable or not _editable(record):
+                    return {**_output(record, "skipped_existing", previous_model),
+                            "source_parent_id": (source.get("parents") or [None])[0]}
+                selected, old_data = match
+                output_format = Path(record["name"]).suffix.lower()[1:]
+            elif any(record["name"] == desired for record in siblings):
                 raise DriveTranscriptionError("destination_conflict", "The requested filename already exists but does not match the recording.")
 
     parents = source.get("parents") or []
@@ -177,4 +192,10 @@ def transcribe_drive(credential: DriveCredential, file_id: str, private: Path, *
         saved_name = desired
     if not saved.get("id") or (saved.get("sha256Checksum") and saved["sha256Checksum"] != hashlib.sha256(data).hexdigest()):
         raise RuntimeError("Drive returned an unexpected upload result")
-    return _output({"id": saved["id"], "name": saved_name}, "replaced" if selected else "created", result.get("model"))
+    status = ("replaced" if replace_existing else "upgraded") if selected else "created"
+    output = _output({"id": saved["id"], "name": saved_name,
+                      "parents": fresh.get("parents", []) if selected else parents}, status, result.get("model"))
+    if status == "upgraded":
+        output["previous_model"] = previous_model
+    output["source_parent_id"] = (source.get("parents") or [None])[0]
+    return output

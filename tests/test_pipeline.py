@@ -14,7 +14,7 @@ from filelock import FileLock
 
 from scribeflow.cache import MAX_AGE_SECONDS, cache_stats, clean_cache
 from scribeflow.pipeline import (
-    _drive_file_id, assemble_transcript, cache_root, paths_for, remote_result_url,
+    _drive_file_id, assemble_transcript, cache_root, paths_for,
     resolve_source, run_rclone, scan_drive, transcribe,
 )
 from scribeflow.provenance import (
@@ -137,17 +137,6 @@ class FilePathTests(unittest.TestCase):
                 self.assertEqual(resolve_source(file_id), "gdrive:Shared folder/recording.m4a")
             self.assertEqual(os.environ["RCLONE_DRIVE_SHARED_WITH_ME"], "true")
 
-    def test_uploaded_url_is_discovered_from_actual_id(self):
-        response = type("R", (), {"stdout": json.dumps([
-            {"Name": "recording.txt", "ID": "final_id_1234567890123456"}
-        ])})()
-        with patch("scribeflow.pipeline.run_rclone", return_value=response):
-            self.assertEqual(
-                remote_result_url("gdrive:example/recording.txt"),
-                "https://drive.google.com/file/d/final_id_1234567890123456/view",
-            )
-
-
 def mocked_engine(source, directory, **kwargs):
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "transcripts").mkdir(exist_ok=True)
@@ -201,191 +190,81 @@ class PipelineTests(unittest.TestCase):
                     transcribe(str(audio), keywords=("<invalid>",))
                 engine.assert_not_called()
 
-    def test_moved_txt_is_found_by_name_and_source_sha_without_new_tool_arguments(self):
-        audio = b"original recording bytes"
-        sha = hashlib.sha256(audio).hexdigest()
-        voice = "gdrive:recordings/recording.mp3"
-        audio_id = "audio_found_123456789012345"
-        transcript_id = "moved_transcript_1234567890"
-        existing = stamp_transcript("original transcript", sha)
-        calls = []
-
-        def fake_rclone(command, *args):
-            if command == "lsjson":
-                return type("R", (), {"stdout": json.dumps([
-                    {"Name": "recording.mp3", "ID": audio_id, "Hashes": {"sha256": sha}},
-                ])})()
-            if command == "copyto":
-                Path(args[1]).write_bytes(audio)
-                return type("R", (), {"stdout": ""})()
-            self.fail(f"Unexpected rclone call {command}")
-
-        def update(file_id, token, data):
-            calls.append(file_id)
-            return {"id": file_id, "sha256Checksum": hashlib.sha256(data).hexdigest()}
-
-        with (
-            tempfile.TemporaryDirectory() as directory,
-            patch("scribeflow.pipeline.cache_root", return_value=Path(directory)),
-            patch("scribeflow.pipeline.resolve_source", return_value=voice),
-            patch("scribeflow.pipeline.run_rclone", side_effect=fake_rclone),
-            patch("scribeflow.pipeline.find_transcripts_by_name", return_value=[transcript_id]),
-            patch("scribeflow.pipeline.read_transcript", side_effect=lambda *_, **__: existing.encode()),
-            patch("scribeflow.pipeline._replacement_token", return_value="test-token"),
-            patch("scribeflow.pipeline.transcribe_file", side_effect=mocked_engine) as engine,
-            patch("scribeflow.pipeline.update_transcript", side_effect=update),
-        ):
-            replaced = transcribe(audio_id, replace_existing=True)
-            self.assertEqual(replaced["status"], "replaced")
-            self.assertIsNone(replaced["transcript"])
-            self.assertEqual(replaced["transcript_file_id"], transcript_id)
-            self.assertEqual(calls, [transcript_id])
-            self.assertEqual(engine.call_count, 1)
-
-            existing = stamp_transcript("different original", "f" * 64)
-            self.assertEqual(transcribe(audio_id, replace_existing=True)["status"], "replacement_missing")
-            self.assertEqual(engine.call_count, 1)
-
-    def test_replacement_txt_in_another_drive_folder_by_id(self):
-        audio = b"synthetic recording"
-        sha = hashlib.sha256(audio).hexdigest()
-        existing = stamp_transcript("old words", sha)
-        voice = "gdrive:recordings/recording.mp3"
-        target_id = "different_folder_txt_12345678"
-        audio_id = "audio_different_12345678901"
-        updates = []
-
-        def fake_rclone(command, *args):
-            if command == "lsjson":
-                self.assertEqual(args[0], "gdrive:recordings")
-                return type("R", (), {"stdout": json.dumps([
-                    {"Name": "recording.mp3", "ID": audio_id, "Hashes": {"sha256": sha}}
-                ])})()
-            if command == "copyto":
-                Path(args[1]).write_bytes(audio)
-                return type("R", (), {"stdout": ""})()
-            self.fail(f"Unexpected rclone call {command}")
-
-        def update(file_id, token, data):
-            self.assertEqual((file_id, token), (target_id, "test-token"))
-            updates.append(data)
-            return {"id": target_id, "sha256Checksum": hashlib.sha256(data).hexdigest()}
-
-        with (
-            tempfile.TemporaryDirectory() as directory,
-            patch("scribeflow.pipeline.cache_root", return_value=Path(directory)),
-            patch("scribeflow.pipeline.resolve_source", return_value=voice),
-            patch("scribeflow.pipeline.run_rclone", side_effect=fake_rclone),
-            patch("scribeflow.pipeline.read_transcript", side_effect=lambda *_, **__: existing.encode()),
-            patch("scribeflow.pipeline._replacement_token", return_value="test-token"),
-            patch("scribeflow.pipeline.transcribe_file", side_effect=mocked_engine) as engine,
-            patch("scribeflow.pipeline.update_transcript", side_effect=update),
-        ):
-            result = transcribe(audio_id, replace_existing=True, transcript_file_id=target_id)
-            self.assertEqual(result["status"], "replaced")
-            self.assertEqual(result["url"], f"https://drive.google.com/file/d/{target_id}/view")
-            self.assertEqual(len(updates), 1)
-            self.assertEqual(source_fingerprint(updates[0].decode()), sha)
-
-            existing = stamp_transcript("different audio", "0" * 64)
-            self.assertEqual(
-                transcribe(audio_id, replace_existing=True, transcript_file_id=target_id)["status"],
-                "source_mismatch",
-            )
-            self.assertEqual(engine.call_count, 1)
-            self.assertEqual(len(updates), 1)
-
-    def test_explicit_drive_replacement_preserves_id_and_tracks_configured_model(self):
-        audio = b"synthetic audio"
-        sha = hashlib.sha256(audio).hexdigest()
-        voice = "gdrive:folder/recording.m4a"
-        target = "gdrive:folder/recording.txt"
-        audio_id = "audio_test_123456789012"
-        target_id = "transcript_test_123456789012"
-        existing = stamp_transcript("기존 전사문", sha)
-
-        def fake_rclone(command, *args):
-            output = ""
-            if command == "lsjson":
-                self.assertEqual(args[0], "gdrive:folder")
-                output = json.dumps([
-                    {"Name": "recording.m4a", "ID": audio_id, "Hashes": {"sha256": sha}},
-                    {"Name": "recording.txt", "ID": target_id,
-                     "Hashes": {"sha256": hashlib.sha256(existing.encode()).hexdigest()}},
-                ])
-            elif command == "cat":
-                self.assertEqual(args[0], target)
-                output = existing
-            elif command == "copyto":
-                self.assertEqual(args[0], voice)
-                Path(args[1]).write_bytes(audio)
-            else:
-                self.fail(f"Unexpected rclone command: {command}")
-            return type("R", (), {"stdout": output})()
-
-        def update(file_id, token, data):
-            self.assertEqual(file_id, target_id)
-            self.assertEqual(token, "test-token")
-            self.assertEqual(transcript_model(data.decode())["model_id"], "next-model-2030-01-01")
-            self.assertEqual(source_fingerprint(data.decode()), sha)
-            return {"id": file_id, "sha256Checksum": hashlib.sha256(data).hexdigest()}
-
-        with (
-            tempfile.TemporaryDirectory() as directory,
-            patch.dict(os.environ, {"SCRIBEFLOW_TRANSCRIPTION_MODEL": "next-model-2030-01-01"}),
-            patch("scribeflow.pipeline.cache_root", return_value=Path(directory)),
-            patch("scribeflow.pipeline.resolve_source", return_value=voice),
-            patch("scribeflow.pipeline.run_rclone", side_effect=fake_rclone),
-            patch("scribeflow.pipeline._replacement_token", return_value="test-token"),
-            patch("scribeflow.pipeline.read_transcript", side_effect=lambda *_, **__: existing.encode()),
-            patch("scribeflow.pipeline.transcribe_file", side_effect=mocked_engine) as engine,
-            patch("scribeflow.pipeline.update_transcript", side_effect=update) as upload,
-        ):
-            outcome = transcribe(audio_id, replace_existing=True)
-            self.assertEqual(engine.call_args.kwargs["model"], "next-model-2030-01-01")
-            self.assertEqual(outcome["status"], "replaced")
-            self.assertEqual(outcome["url"], f"https://drive.google.com/file/d/{target_id}/view")
-            upload.assert_called_once()
-
-            existing = stamp_transcript("다른 원본", "0" * 64)
-            self.assertEqual(transcribe(audio_id, replace_existing=True)["status"], "source_mismatch")
-            self.assertEqual(engine.call_count, 1)
-            upload.assert_called_once()
-
-            existing = stamp_transcript("기존 전사문", sha)
-
-            def edit_during_transcription(source, directory, **kwargs):
-                nonlocal existing
-                existing = stamp_transcript("사용자가 편집한 전사문", sha)
-                return mocked_engine(source, directory, **kwargs)
-
-            engine.side_effect = edit_during_transcription
-            with self.assertRaisesRegex(ValueError, "변경되었습니다"):
-                transcribe(audio_id, replace_existing=True)
-            self.assertIn("사용자가 편집한 전사문", existing)
-            upload.assert_called_once()
-
-    def test_uneditable_adjacent_transcript_fails_before_paid_api(self):
-        source = "gdrive:folder/recording.m4a"
-        original_sha = hashlib.sha256(b"original").hexdigest()
-        existing = stamp_transcript("old words", original_sha)
+    def test_drive_id_delegates_to_cloud_workflow_without_rclone_file_io(self):
+        audio_id = "audio_test_123456789012345"
         transcript_id = "transcript_test_123456789012"
-        entries = [
-            {"Name": "recording.m4a", "ID": "audio_test_123456789012",
-             "Hashes": {"sha256": original_sha}},
-            {"Name": "recording.txt", "ID": transcript_id,
-             "Hashes": {"sha256": hashlib.sha256(existing.encode()).hexdigest()}},
-        ]
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.dict(os.environ, {"SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID": ""}), \
+             patch("scribeflow.pipeline.cache_root", return_value=Path(directory)), \
+             patch("scribeflow.pipeline._LocalDriveCredential", return_value=object()) as credential, \
+             patch("scribeflow.pipeline.run_rclone") as rclone, \
+             patch("scribeflow.drive_transcription.transcribe_drive", return_value={
+                 "ok": True, "status": "upgraded", "transcript_file_id": transcript_id,
+                 "url": "https://drive.google.com/file/d/" + transcript_id + "/view",
+             }) as drive:
+            result = transcribe(audio_id)
+            self.assertEqual(result["status"], "upgraded")
+            self.assertEqual(result["transcript_file_id"], transcript_id)
+            self.assertIsNone(result["transcript"])
+            self.assertEqual(drive.call_args.args[:2], (credential.return_value, audio_id))
+            self.assertFalse(drive.call_args.args[2].exists())
+            rclone.assert_not_called()
+
+    def test_drive_path_resolves_id_then_delegates_and_preserves_custom_output(self):
+        voice = "gdrive:example/recording.m4a"
+        output = "gdrive:example/selected.md"
+        audio_id = "audio_test_123456789012345"
         with tempfile.TemporaryDirectory() as directory, \
              patch("scribeflow.pipeline.cache_root", return_value=Path(directory)), \
+             patch("scribeflow.pipeline._LocalDriveCredential", return_value=object()), \
              patch("scribeflow.pipeline.run_rclone", return_value=type("R", (), {
-                 "stdout": json.dumps(entries),
-             })()), \
-             patch("scribeflow.pipeline._replacement_token", return_value="fake-token"), \
-             patch("scribeflow.pipeline.read_transcript", side_effect=PermissionError("not editable")), \
-             patch("scribeflow.pipeline.transcribe_file") as engine:
-            with self.assertRaises(PermissionError):
-                transcribe(source, replace_existing=True)
+                 "stdout": json.dumps({"ID": audio_id, "IsDir": False}),
+             })()) as rclone, \
+             patch("scribeflow.drive_transcription.transcribe_drive", return_value={
+                 "ok": True, "status": "created", "transcript_name": "selected.md",
+                 "transcript_parent_id": "parent", "source_parent_id": "parent",
+             }) as drive:
+            result = transcribe(voice, output, output_format="md")
+            self.assertEqual(result["transcript"], output)
+            rclone.assert_called_once_with("lsjson", voice, "--stat")
+            self.assertEqual(drive.call_args.args[1], audio_id)
+            self.assertEqual(drive.call_args.kwargs["output_name"], "selected.md")
+
+    def test_local_known_model_upgrade_preserves_existing_format_and_then_reuses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "sample.m4a"
+            audio.write_bytes(b"recording")
+            old = root / "sample.md"
+            old.write_text(stamp_transcript("legacy speech", hashlib.sha256(audio.read_bytes()).hexdigest(),
+                TranscriptMetadata(audio.name, 9, 10, "OpenAI", "whisper-1", datetime.now(timezone.utc))), encoding="utf-8")
+            with patch.dict(os.environ, {"SCRIBEFLOW_TRANSCRIPTION_MODEL": "gpt-transcribe"}), \
+                 patch("scribeflow.pipeline.cache_root", return_value=root / "cache"), \
+                 patch("scribeflow.pipeline.transcribe_file", side_effect=mocked_engine) as engine:
+                result = transcribe(str(audio))
+                repeated = transcribe(str(audio))
+            self.assertEqual(result["status"], "upgraded")
+            self.assertEqual(result["previous_model"], "whisper-1")
+            self.assertEqual(result["output_format"], "md")
+            self.assertEqual(transcript_model(old.read_text())["model_id"], "gpt-transcribe")
+            self.assertFalse(audio.with_suffix(".txt").exists())
+            self.assertEqual(repeated["status"], "skipped_existing")
+            engine.assert_called_once()
+
+    def test_local_edited_old_model_transcript_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "sample.m4a"
+            audio.write_bytes(b"recording")
+            text = audio.with_suffix(".txt")
+            edited = stamp_transcript("legacy speech", hashlib.sha256(audio.read_bytes()).hexdigest(),
+                TranscriptMetadata(audio.name, 9, 10, "OpenAI", "whisper-1", datetime.now(timezone.utc))).replace("legacy speech", "human correction")
+            text.write_text(edited, encoding="utf-8")
+            with patch.dict(os.environ, {"SCRIBEFLOW_TRANSCRIPTION_MODEL": "gpt-transcribe"}), \
+                 patch("scribeflow.pipeline.cache_root", return_value=root / "cache"), \
+                 patch("scribeflow.pipeline.transcribe_file") as engine:
+                self.assertEqual(transcribe(str(audio))["status"], "skipped_existing")
+            self.assertEqual(text.read_text(), edited)
             engine.assert_not_called()
 
     def test_concurrent_different_settings_only_call_model_once(self):
@@ -416,76 +295,6 @@ class PipelineTests(unittest.TestCase):
                 ["created", "skipped_existing"],
             )
             self.assertEqual(cache_stats(cache)["jobs"], 0)
-
-    def test_remote_upload_and_cleanup_without_actual_api(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            cache = root / "cache"
-            voice = "gdrive:example/recording.m4a"
-            result_path = "gdrive:example/recording.txt"
-            remote_files = {voice: b"mock-audio"}
-
-            def fake_rclone(*args):
-                command = args[0]
-                if command == "lsf":
-                    names = [
-                        p.rsplit("/", 1)[-1] for p in remote_files
-                        if p.startswith("gdrive:example/")
-                    ]
-                    output = "\n".join(names) + "\n"
-                elif command == "copyto":
-                    source, target = args[1:3]
-                    if source.startswith("gdrive:"):
-                        Path(target).write_bytes(remote_files[source])
-                    else:
-                        remote_files[target] = Path(source).read_bytes()
-                    output = ""
-                elif command == "cat":
-                    output = remote_files[args[1]].decode("utf-8")
-                elif command == "lsjson":
-                    if "--hash" in args:
-                        output = json.dumps([{
-                            "Name": "recording.m4a",
-                            "Hashes": {"sha256": hashlib.sha256(b"mock-audio").hexdigest()},
-                        }])
-                    else:
-                        output = json.dumps([
-                            {"Name": "recording.txt", "ID": "test_drive_id_1234567890"}
-                        ])
-                else:
-                    raise AssertionError(args)
-                return type("Result", (), {"stdout": output})()
-
-            with patch("scribeflow.pipeline.cache_root", return_value=cache):
-                with patch("scribeflow.pipeline.run_rclone", side_effect=fake_rclone):
-                    with patch("scribeflow.pipeline.transcribe_file", side_effect=mocked_engine) as engine:
-                        result = transcribe(voice)
-                        self.assertEqual(result["transcript"], result_path)
-                        self.assertEqual(
-                            result["url"],
-                            "https://drive.google.com/file/d/test_drive_id_1234567890/view",
-                        )
-                        self.assertEqual(engine.call_count, 1)
-                        self.assertEqual(remote_files[voice], b"mock-audio")
-                        transcript = remote_files[result_path].decode()
-                        self.assertEqual(
-                            strip_transcript_footer(transcript).strip(),
-                            "[00:00:00–00:00:10]\n테스트 전사문",
-                        )
-                        self.assertEqual(
-                            source_fingerprint(transcript),
-                            hashlib.sha256(b"mock-audio").hexdigest(),
-                        )
-                        self.assertIn(
-                            'Source: "recording.m4a" | Duration: 0:00:10 | Size: 10 bytes',
-                            transcript,
-                        )
-                        self.assertIn("Detected languages: 확인 불가", transcript)
-                        self.assertEqual(set(remote_files), {voice, result_path})
-                        self.assertEqual(cache_stats(cache)["jobs"], 0)
-                        self.assertFalse(list((cache / "downloads").iterdir()))
-                        self.assertEqual(transcribe(voice)["status"], "skipped_existing")
-                        self.assertEqual(engine.call_count, 1)
 
     def test_multi_chunk_output_labels_original_audio_ranges(self):
         with tempfile.TemporaryDirectory() as directory:

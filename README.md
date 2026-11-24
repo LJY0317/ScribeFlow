@@ -13,7 +13,7 @@
 
 ChatGPT 원격 전사가 목표라면 **[처음부터 배포하고, 나중에 완전히 제거하는 안내](docs/cloud-run.md)**부터 시작하세요. 별도 유료 인증 업체나 항상 켜두는 PC는 필요 없습니다. 단, Google Cloud 결제 및 OpenAI API 사용료는 별도이며, 원격 서버의 최초 연결에는 Google OAuth 인증이 필요합니다.
 
-**동작 구조:** ChatGPT → Google OAuth가 적용된 Cloud Run MCP 서버 → 요청당 실행되는 Cloud Run Job → Google Drive에서 원본 다운로드 → OpenAI 음성인식 → 원본 폴더에 TXT 또는 Markdown 저장. 서버는 유휴 상태에서 0개 인스턴스로 축소됩니다.
+**동작 구조:** ChatGPT → Google OAuth가 적용된 Cloud Run MCP 서버 → 요청당 실행되는 Cloud Run Job → Google Drive API로 원본·기존 전사문 확인 → 필요한 경우 OpenAI 음성인식 → Drive API로 TXT 또는 Markdown 저장·갱신. 서버는 유휴 상태에서 0개 인스턴스로 축소됩니다. 로컬 CLI의 Drive 전사도 같은 파일 ID 기반 처리 코드와 모델 갱신 정책을 사용합니다.
 
 실제 검증: 개인 Drive와 공유받은 Drive 폴더에서 각각 기존 TXT를 휴지통으로 옮긴 뒤, **원본 M4A만 남긴 상태로 새 TXT를 생성**했습니다(2026-11-13). 별도 설치한 컴퓨터·모바일의 ChatGPT 연결 자동 승계 여부는 환경별로 확인해야 합니다.
 
@@ -21,7 +21,7 @@ ChatGPT 원격 전사가 목표라면 **[처음부터 배포하고, 나중에 �
 
 - [uv](https://docs.astral.sh/uv/), FFmpeg/FFprobe (Python 3.10+는 uv가 관리 가능)
 - OpenAI API 키와 사용 가능한 API 크레딧
-- Google Drive를 사용할 경우 [rclone](https://rclone.org/drive/)의 `gdrive:` 연결 (로컬 파일 처리에는 불필요)
+- Google Drive를 사용할 경우 [rclone](https://rclone.org/drive/)의 Google OAuth `gdrive:` 연결 (로컬 파일 처리에는 불필요)
 
 ```bash
 uv tool install "git+https://github.com/LJY0317/ScribeFlow.git"
@@ -52,7 +52,7 @@ scribeflow transcribe '/path/to/한국어녹음.m4a' --format md
 
 1. `rclone config`로 Google Drive 원격 저장소의 이름을 `gdrive`로 설정합니다.
 2. 음성 파일의 **Google Drive URL, 파일 ID 또는 `gdrive:폴더/녹음.m4a` 경로**를 전달합니다.
-3. ScribeFlow가 Drive에 있는 실제 파일을 식별하고, 로컬 임시 캐시에 다운로드한 뒤 전사합니다. 완료 후 `녹음.txt`(기본값) 또는 `--format md`로 선택한 `녹음.md`를 같은 Drive 폴더에 업로드합니다.
+3. URL·ID는 Drive API에 직접 전달합니다. rclone은 로컬 OAuth 갱신과 경로·폴더 탐색에만 사용합니다. 원본 다운로드, 기존 전사문 확인, 저장·갱신은 원격 MCP와 동일한 Drive API 코드가 파일 ID로 수행합니다. 별도의 rclone 파일 전송 fallback은 없습니다.
 
 ```bash
 # 큰 Drive에서 탐색 범위를 제한하려면 해당 폴더의 ID를 선택적으로 설정
@@ -72,27 +72,35 @@ scribeflow transcribe 'https://drive.google.com/file/d/파일_ID/view' --json
 scribeflow transcribe '파일_ID' --json
 ```
 
-`SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID`는 선택 사항입니다. 설정하면 해당 폴더와 하위 파일에서만 검색하고, 설정하지 않으면 연결된 Drive의 기본 루트를 사용합니다. **파일 URL/ID를 처음 해석할 때 해당 범위의 파일 메타데이터를 조회**합니다. 넓은 Drive에서는 상위 폴더 ID를 지정하면 검색이 빨라집니다.
+`SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID`는 선택 사항입니다. 설정하면 해당 폴더와 하위 파일에서만 검색하고, 설정하지 않으면 연결된 Drive의 기본 루트를 사용합니다. 범위가 지정되지 않은 파일 URL·ID 전사에는 전체 Drive 탐색이 필요 없습니다. `paths`, `scan`, 경로 입력 또는 범위를 지정한 전사에서는 해당 범위의 경로를 확인합니다.
 
-새로 전사한 결과의 JSON에는 `status`, `source`, `transcript`, `model`, `url`(Drive인 경우), `transcript_file_id`(Drive ID를 확인한 경우)가 포함됩니다. 다른 폴더에 있는 기존 전사문을 갱신한 결과는 존재하지 않는 인접 경로 대신 `transcript=null`과 실제 Drive ID·URL을 반환합니다. 일반 요청에서 동명 전사문의 원본 SHA-256이 일치하면 `skipped_existing`, 해시가 없으면 `unverified_existing`, 불일치하면 `source_mismatch`를 반환합니다. `--replace-existing`을 명시하면 해시가 일치하는 기존 전사문을 재전사 결과로 갱신합니다. 로컬 환경의 모델은 `SCRIBEFLOW_TRANSCRIPTION_MODEL`로 지정할 수 있으며 기본값은 `gpt-transcribe`입니다.
+전사 결과의 JSON에는 `status`, `source`, `transcript`, `model`, 실제 Drive 파일 ID·URL이 포함됩니다. ID·URL을 직접 입력했거나 다른 폴더의 파일을 갱신해 경로를 알 수 없으면 `transcript=null`과 실제 Drive ID·URL을 반환합니다. 같은 폴더의 다른 이름을 명시하는 `--output`도 지원합니다. 모델은 `SCRIBEFLOW_TRANSCRIPTION_MODEL`로 지정할 수 있으며 기본값은 `gpt-transcribe`입니다.
 
-`scan --models`는 기존 TXT·MD 끝부분을 읽고 `transcribed`에 각 원본의 Drive ID, 전사문 ID·형식, 해시 검증 상태, 공급자·모델 ID·스냅샷·전사 시각을 반환합니다. `model_counts`에서 모델별 개수를 확인할 수 있습니다. 두 형식이 모두 있으면 각각 조회하며, 해시만 있는 구형 전사문은 `model`은 `null`입니다. `--limit`은 반환 목록의 크기를 제한하며 개수는 조회 범위 전체를 반영합니다. 에이전트는 `status=skipped_existing`이며 원하는 구형 `model_id`와 일치하는 원본 ID를 골라 재전사 후보 목록을 만들 수 있습니다. 조회 결과는 표준 출력에만 표시됩니다.
+### 기존 전사문과 모델 갱신 정책 (CLI·MCP 공통)
+
+- 같은 원본 SHA-256의 TXT·MD가 없으면 신규 전사합니다. 요청한 이름이 다른 원본의 파일이거나 출처를 검증할 수 없으면 덮어쓰지 않습니다.
+- 기존 전사문 모델이 현재 모델과 같거나, 성능 개선 관계를 알 수 없거나, 더 전문적인 모델이면 `skipped_existing`으로 재사용합니다. 같은 원본의 다른 형식에 재사용 가능한 전사문이 있으면 추가 전사하지 않습니다.
+- 현재 설정이 `gpt-transcribe`이고 기존 모델이 `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` 또는 명시된 mini 스냅샷인 경우에는 사용자가 선택한 음성을 새 모델로 전사해 갱신합니다(`upgraded`, `previous_model`과 `model` 반환). [OpenAI의 일반 파일 전사 권장 모델](https://developers.openai.com/api/docs/guides/speech-to-text)에 근거한 명시적 전환이며, 모든 녹음에서 품질이 개선된다고 보장하지 않습니다. 파일 ID·위치·형식은 유지합니다. 유료 전사에 실패하면 기존 내용을 보존합니다.
+- 새로 기록되는 본문 SHA-256과 실제 본문이 다르면 수동 편집된 것으로 보아 자동 갱신하지 않습니다. 구형 전사문에 본문 해시가 없다면 과거 편집 여부는 판별할 수 없으므로, 모델·원본 정보가 일치하는 구형 파일은 선택한 전사 요청에서 갱신될 수 있습니다. 기존 내용의 보관은 Drive의 일반 버전 기록 정책을 따릅니다. 같은 모델 ID의 비공개 내부 변경이나 알려지지 않은 모델 차이를 추측하지 않습니다.
+- `--replace-existing` 또는 `retranscribe_audio`는 원본 SHA-256이 확인된 기존 파일을 명시적으로 재전사합니다. 기존 파일의 형식에 맞추어 요청해야 합니다. 전체 Drive를 자동으로 순회하거나 일괄 갱신하지 않습니다.
+
+`scan --models`는 기존 TXT·MD 끝부분을 읽고 `transcribed`에 각 원본의 Drive ID, 전사문 ID·형식, 해시 검증 상태, 공급자·모델 ID·스냅샷·전사 시각을 반환합니다. `model_counts`에서 모델별 개수를 확인할 수 있습니다. 두 형식이 모두 있으면 각각 조회하며, 해시만 있는 구형 전사문은 `model`은 `null`입니다. `--limit`은 반환 목록의 크기를 제한하며 개수는 조회 범위 전체를 반영합니다. 에이전트는 `upgrade_candidate=true`인 원본 ID를 골라 갱신 후보를 찾을 수 있습니다. 이 플래그는 모델 메타데이터에 기반하며 실제 전사 전에 본문을 확인합니다. 조회 결과는 표준 출력에만 표시됩니다.
 
 ### ChatGPT 원격 MCP 사용
 
 [Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 전달합니다. 원격 MCP는 연결된 Google 계정의 OAuth 권한으로 Drive API에 직접 접근합니다. 서버 측 rclone 설치나 별도 Drive 인증은 필요 없습니다. 기존 원격 설치를 업데이트할 때는 [이미지 갱신 절차](docs/cloud-run.md#6-사용--시험--운영)를 사용하면 기존 Google Cloud 설정이 유지됩니다.
 
-- `transcribe_audio`는 새 녹음을 전사합니다. 기본 `output_format="txt"`이며, `output_format="md"`를 선택하면 Markdown으로 저장합니다. 같은 파일의 작업을 반복 요청하면 기존 실행 상태와 확인된 결과를 반환합니다. 원본 SHA-256이 일치하는 인접 TXT·MD가 이미 있으면 실제 형식과 파일 ID를 반환하며 유료 전사를 하지 않습니다. 작업 실패 등을 다시 시도할 때 `retry=True`를 사용할 수 있습니다.
+- `transcribe_audio`는 새 녹음을 전사합니다. 기본 `output_format="txt"`이며, `output_format="md"`를 선택하면 Markdown으로 저장합니다. 같은 파일의 실행 중 작업은 재사용합니다. 완료 후 새로운 요청은 현재 Drive 상태와 Worker 모델을 다시 확인합니다. 원본 SHA-256이 일치하는 기존 TXT·MD는 위 모델 갱신 정책에 따라 재사용하거나 기존 ID에 갱신합니다. 실패한 작업 등을 다시 시도할 때 `retry=True`를 사용할 수 있습니다.
 - `retranscribe_audio`는 선택한 녹음을 현재 설정 모델로 다시 전사하고, 원본 SHA-256이 일치하는 기존 TXT 또는 선택한 Markdown(`output_format="md"`)의 내용만 갱신합니다. 같은 Drive 파일 ID와 링크가 유지됩니다. 새 전사에 OpenAI API 사용료가 발생합니다.
 - 기존 TXT를 다른 Google Drive 폴더로 이동한 경우에는 `retranscribe_audio(file_id="원본_음성_ID", transcript_file_id="기존_TXT_ID")`로 **기존 TXT 파일을 직접 지정**할 수 있습니다. 원본 SHA-256과 기존 TXT 말꼬리의 SHA-256이 일치해야 하며, 일치하지 않으면 전사 API를 호출하지 않습니다. 갱신 후 TXT의 파일 ID와 현재 폴더는 그대로 유지됩니다. `transcript_file_id`를 생략하면 원본 폴더를 먼저 확인합니다.
 - 원본 폴더에 선택한 형식의 동명 전사문이 없으면 Drive에서 동일 파일명과 원본 SHA-256이 일치하는 후보 한 개만 갱신합니다. 여러 후보 또는 다른 이름의 전사문은 파일 ID로 직접 지정하세요. CLI에서도 `--replace-existing --transcript-file-id ID --format md` (TXT는 `--format txt`)로 기존 파일을 지정할 수 있습니다.
 - `get_transcription_status`는 실행 상태와 결과를 조회합니다. 완료 시 실제 형식·Drive 파일 ID·URL·모델, 실패 시 오류 코드가 제공됩니다(결과 기록이 없는 이전 작업 등은 상태만 제공). 결과 ID를 기존 Google Drive 플러그인에 전달해 읽거나 변환할 수 있습니다.
 
-**형식 변환은 재전사가 아닙니다.** 이미 만들어진 TXT를 Markdown·Google Docs·Sheets·Slides로 옮길 때에는 새 전사 요청을 하지 말고 ChatGPT의 기존 Google Drive 플러그인에서 원문을 읽고 결과 문서를 만드세요. 신규 전사의 `output_format`은 저장 형식을 선택하고, 재전사에서는 기존 파일의 형식을 지정합니다. 재전사는 정확도 개선 등 사용자가 명시한 목적에만 사용하세요.
+**형식 변환은 재전사가 아닙니다.** 이미 만들어진 TXT를 Markdown·Google Docs·Sheets·Slides로 옮길 때에는 새 전사 요청을 하지 말고 ChatGPT의 기존 Google Drive 플러그인에서 원문을 읽고 결과 문서를 만드세요. 신규 전사의 `output_format`은 저장 형식을 선택하고, 재전사에서는 기존 파일의 형식을 지정합니다. 형식 변환만을 위해 재전사를 호출하지 마세요. 직접 선택한 음성의 일반 전사 요청에도 위 모델 갱신 정책이 적용되며, 같은 모델로 다시 전사할 때는 명시적 재전사를 사용하세요.
 
 ## 원문 보존과 오디오 처리
 
-- **본문에는 인식된 발언과 원본 오디오의 시간 범위를 출력**합니다. 문단 구분과 공백을 정리합니다. TXT·MD 끝에는 원본 파일명, 음성 길이, 원본 크기(바이트), 감지 언어 목록, API 공급자, 요청 모델 ID, 공개 스냅샷, UTC 전사 완료 시각, ScribeFlow 버전을 기록합니다. `gpt-transcribe`의 스냅샷은 `미공개`로 표시합니다. 감지 언어는 API가 보고한 언어 코드를 구간 순서로 모아 중복을 제거하며, 보고된 코드가 없으면 `확인 불가`로 표시합니다. 원본의 SHA-256은 기존과 같은 형식으로 마지막 줄에 기록합니다.
+- **본문에는 인식된 발언과 원본 오디오의 시간 범위를 출력**합니다. 문단 구분과 공백을 정리합니다. TXT·MD 끝에는 원본 파일명, 음성 길이, 원본 크기(바이트), 감지 언어 목록, API 공급자, 요청 모델 ID, 공개 스냅샷, UTC 전사 완료 시각, ScribeFlow 버전을 기록합니다. `gpt-transcribe`의 스냅샷은 `미공개`로 표시합니다. 감지 언어는 API가 보고한 언어 코드를 구간 순서로 모아 중복을 제거하며, 보고된 코드가 없으면 `확인 불가`로 표시합니다. 원본의 SHA-256은 기존과 같은 형식으로 마지막 줄에 기록합니다. 본문 SHA-256도 메타데이터에 기록해 이후 수동 편집 여부를 확인합니다.
 - SHA-256은 파일명·Drive 파일 ID가 달라져도 **동일한 바이트의 음성 파일인지** 비교할 수 있습니다. Drive가 해시를 제공하면 원본 전체를 다시 내려받지 않고 검증합니다. 다만 파일 재인코딩 시 값이 달라지며, 해시 일치는 전사문 발언 내용의 정확성을 증명하지 않습니다.
 - **지원 입력 형식:** `.flac`, `.mp3`, `.mp4`, `.mpeg`, `.mpga`, `.m4a`, `.ogg`, `.wav`, `.webm` (대소문자 구분 없음). Google Drive 파일 스캔·파일 ID 처리·전사 엔진이 같은 목록을 사용합니다. `.aac`, `.qta`, `.opus`, `.wma` 등은 자동으로 손실 변환하지 않고 명확히 거부합니다.
 - **원본 음성 보존:** 지원 형식이고 원본 크기가 25MB 이하이면 변환·분할 없이 그대로 OpenAI API에 전달합니다. 파일 크기가 초과할 때만 FFmpeg 스트림 복사(`-c:a copy`)로 원래 압축된 오디오를 유지하며 독립적으로 재생 가능한 조각을 만듭니다. 각 조각의 실제 크기를 API 호출 전에 검사하고, 크면 길이를 줄여 다시 분할합니다. 손실 재인코딩은 자동으로 하지 않습니다. 지원하지 않는 형식은 안내 후 중단합니다.
