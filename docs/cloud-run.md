@@ -137,7 +137,7 @@ ID는 `https://drive.google.com/file/d/FILE_ID/view`에서 확인합니다. MCP 
 
 **검증 사실(2026-11-13):** 공유받은 Drive 폴더의 M4A 약 0.84MB와 일반 Drive의 M4A 약 68MB에서 기존 TXT를 휴지통으로 옮긴 뒤 새 TXT가 생성됐습니다. Linux CI의 Python 테스트 및 Docker 빌드도 통과했습니다. Windows 로컬 CLI 및 각 모바일 ChatGPT 앱은 별도 실기 검증 전입니다.
 
-**기존 배포 업데이트 (v0.6.0 이후):** 새 Cloud Shell이나 로컬 체크아웃에서도 기존 OAuth Client ID, 이메일, Worker 리전, OpenAI API 주소·모델 또는 Secret 이름을 다시 설정할 필요가 없습니다. GitHub에서 최신 소스를 받고 Google Cloud 프로젝트만 지정하세요.
+**기존 배포 업데이트 (v0.6.1 이후):** 새 Cloud Shell이나 로컬 체크아웃에서도 기존 OAuth Client ID, 이메일, Worker 리전, OpenAI API 주소·모델 또는 Secret 이름을 다시 설정할 필요가 없습니다. GitHub에서 최신 소스를 받고 Google Cloud 프로젝트만 지정하세요.
 
 ```bash
 cd ~/ScribeFlow
@@ -192,7 +192,7 @@ export GCP_PROJECT='YOUR_EXISTING_PROJECT_ID'
 bash scripts/audit-cloud-storage.sh
 ```
 
-점검 결과에는 클라우드 프로젝트와 리소스 구성 정보가 포함될 수 있으므로 공개 채팅이나 공개 저장소에 원본 출력을 그대로 올리지 마세요. 이 스크립트는 활성 Job·서비스 이미지, Registry 이미지 목록, 기존 정리 정책, 로그 버킷 보관기간만 조회하며 삭제·설정 변경은 하지 않습니다.
+점검 결과에는 클라우드 프로젝트와 리소스 구성 정보가 포함될 수 있으므로 공개 채팅이나 공개 저장소에 원본 출력을 그대로 올리지 마세요. 이 스크립트는 모든 리전의 ScribeFlow Gateway·Worker 이미지와 현재 연결 대상, 이전 리전의 Job, 앱 전용 Registry와 정리 정책, 기본 로그 보관기간을 조회합니다. 프로젝트 ID 외에 리전을 다시 설정하거나 Artifact Registry API를 활성화할 필요가 없으며 삭제·설정 변경은 하지 않습니다.
 
 **이미지 정리 정책은 관리자 선택사항:** `scripts/artifact-cleanup-policy.json`은 90일 지난 *태그 없는* 이미지를 대상으로 하되 이미지 패키지마다 최근 5개를 유지하는 보수적 예시입니다. 이 예시도 오래 실행 중인 이미지나 필요한 이전 버전을 삭제할 위험이 있으므로 **자동 적용되지 않습니다.** 먼저 실행 중인 두 Cloud Run 리소스의 정확한 이미지 다이제스트와 롤백 이미지를 대조하세요. 테스트만 설정하려면 아래 명령을 수동으로 실행할 수 있으나, `--dry-run`도 Registry에 테스트 정책을 **저장**한다는 점에 유의하세요. 이 명령은 실제 이미지를 삭제하지 않습니다.
 
@@ -215,26 +215,27 @@ gcloud artifacts repositories set-cleanup-policies scribeflow \
 
 ## 완전 제거
 
-**ScribeFlow 소유 리소스와 공용 사용자 자산을 구분합니다.** 기본 제거 스크립트는 **Google Cloud 프로젝트, 기존 OpenAI/rclone 키, 음성 원본·TXT, GitHub 저장소를 보존**합니다. 전용 Google Cloud 프로젝트라면 마지막에 프로젝트 자체를 삭제하는 방식이 가장 깔끔합니다.
+**ScribeFlow 소유 리소스와 공용 사용자 자산을 구분합니다.** 기본 제거 스크립트는 **Google Cloud 프로젝트, 기존 OpenAI/rclone 키, 음성 원본·TXT·MD, GitHub 저장소를 보존**합니다. 전용 Google Cloud 프로젝트라면 마지막에 프로젝트 자체를 삭제하는 방식이 가장 깔끔합니다.
 
 1. **ChatGPT**: Plugins에서 ScribeFlow 연결을 삭제합니다. Google 계정의 [제3자 앱 연결](https://myaccount.google.com/connections)에서도 ScribeFlow 접근 권한을 취소할 수 있습니다.
 2. **Cloud Shell**: 저장소를 다시 클론하거나 기존 `~/ScribeFlow`에서 아래 스크립트를 실행합니다. 먼저 **dry-run으로 제거 대상 목록**을 확인합니다.
 
-   Gateway와 Job의 리전이 다르면 `SCRIBEFLOW_WORKER_REGION`에 운영 Job 리전을 지정합니다. 작업 암호화 키도 제거 대상입니다.
+   진행 중인 전사가 끝난 뒤 제거하세요. 프로젝트 ID만 지정하면 모든 리전에서 실제 ScribeFlow 서비스·Job·Registry를 찾습니다. 이전 리전의 표준 Job이나 Gateway 제거 후 남은 Job도 포함됩니다. 앱 전용 서비스 계정과 데이터베이스를 공유하므로 일부 리전만 제거하는 명령이 아닙니다. 수동 연결한 별도 이름의 Job은 전용 Worker 계정을 사용하는 경우에만 제거합니다.
 
    ```bash
    export GCP_PROJECT='YOUR_PROJECT_ID'
-   export SCRIBEFLOW_OPENAI_SECRET='YOUR_OPENAI_SECRET_NAME'
    cd ~/ScribeFlow
    bash scripts/uninstall-cloud-run.sh
    # 검토 후 앱 전용 리소스 실제 삭제:
    bash scripts/uninstall-cloud-run.sh --apply
    ```
 
+   기존 Worker에서 OpenAI Secret 참조를 확인해 앱 전용 접근 권한만 해제하며 키 자체는 보존합니다. 이미 Worker를 수동으로 삭제했다면 사용자 지정 Secret 이름을 `SCRIBEFLOW_OPENAI_SECRET`로 지정할 수 있습니다.
+
    제거 범위: `scribeflow-mcp` Cloud Run 서비스, `scribeflow-transcribe` Job, `scribeflow-oauth` Firestore 데이터베이스·OAuth 로그인 상태, `scribeflow` Artifact Registry 저장소와 이미지, `scribeflow-worker`·`scribeflow-gateway` 서비스 계정 및 관련 IAM, `scribeflow-google-client-secret`·`scribeflow-oauth-seed`·구형 앱 전용 인증 비밀. Firestore·이미지 삭제는 되돌릴 수 없습니다.
 
 3. **Google Auth Platform**의 [클라이언트](https://console.cloud.google.com/auth/clients)에서 ScribeFlow용 OAuth **웹 클라이언트**를 삭제합니다. 브랜드·테스트 사용자 설정은 프로젝트에 남을 수 있으나, 공용 프로젝트라면 다른 앱을 위해 보존하세요.
-4. **Secret Manager**: `SCRIBEFLOW_OPENAI_SECRET`과 이전 버전의 rclone 인증 비밀은 *ScribeFlow 전용이고 더 이상 필요하지 않은 경우에만* 수동으로 삭제합니다. 다른 서비스가 사용하는 기존 비밀이면 유지합니다. **OpenAI API 키도** 다른 용도가 없다면 [OpenAI 대시보드](https://platform.openai.com/api-keys)에서 별도로 폐기합니다. rclone 인증 설정도 다른 프로그램에서 사용한다면 유지합니다.
+4. **Secret Manager**: OpenAI API 키를 저장한 Secret과 이전 버전의 rclone 인증 비밀은 *ScribeFlow 전용이고 더 이상 필요하지 않은 경우에만* 수동으로 삭제합니다. 다른 서비스가 사용하는 기존 비밀이면 유지합니다. **OpenAI API 키도** 다른 용도가 없다면 [OpenAI 대시보드](https://platform.openai.com/api-keys)에서 별도로 폐기합니다. rclone 인증 설정도 다른 프로그램에서 사용한다면 유지합니다.
 5. **과금·잔여 리소스**: [예산 알림](https://console.cloud.google.com/billing/budgets), Cloud Build 스테이징 스토리지, Cloud Logging 및 기타 Google Cloud 자원을 검토합니다. 공용 결제 계정·공용 Cloud Shell 설정은 자동 삭제하지 않습니다.
 6. **Google Cloud 프로젝트 자체 폐기(선택):** 이 프로젝트에 ScribeFlow 외의 데이터나 서비스가 없다는 것을 확인한 뒤 [리소스 관리자](https://console.cloud.google.com/cloud-resource-manager)에서 **해당 프로젝트를 종료**하면 남은 프로젝트 소유 자원도 정리할 수 있습니다. 프로젝트 삭제는 광범위하게 파괴적이므로 앱 제거 스크립트가 자동 수행하지 않습니다. Google Cloud 결제 계정과 OpenAI 계정은 별도입니다.
 7. **로컬 설치물**: 실행 중인 전사가 없을 때 `scribeflow auth remove`(macOS 전용), `uv tool uninstall scribeflow`, 소스 체크아웃·전용 캐시를 제거합니다. 공용 `rclone.conf`, uv 캐시, FFmpeg·Python과 **사용자 원본 오디오 및 완성된 TXT**는 자동 삭제하지 않습니다.

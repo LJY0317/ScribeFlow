@@ -15,34 +15,9 @@ done
 
 IMAGE="${SCRIBEFLOW_IMAGE:-ghcr.io/ljy0317/scribeflow:sha-$(git rev-parse HEAD)}"
 service=scribeflow-mcp
-list_args=(--project="$GCP_PROJECT" --filter="metadata.name=$service" --format=json)
-if [[ -n "${SCRIBEFLOW_REGION:-}" ]]; then
-  list_args+=(--region="$SCRIBEFLOW_REGION")
-fi
-
-# Locate the existing Gateway, then use its actual Job routing configuration.
-# Only the selected resource names, regions and image leave the JSON parser.
-target="$(gcloud run services list "${list_args[@]}" |
-  python3 -c '
-import json, sys
-services = [s for s in json.load(sys.stdin) if s["metadata"]["name"] == "scribeflow-mcp"]
-if len(services) != 1:
-    sys.exit("Expected one existing scribeflow-mcp Gateway. For multiple regions, select SCRIBEFLOW_REGION; for a new installation, use deploy-cloud-run.sh.")
-s = services[0]
-region = s["metadata"]["labels"]["cloud.googleapis.com/location"]
-container = s["spec"]["template"]["spec"]["containers"][0]
-env = {e["name"]: e.get("value") for e in container.get("env", [])}
-worker_region = env.get("SCRIBEFLOW_REGION", "asia-northeast3")
-job = env.get("SCRIBEFLOW_JOB", "scribeflow-transcribe")
-if not worker_region or not job:
-    sys.exit("The existing Gateway Job configuration is incomplete.")
-print(region, worker_region, job, container["image"])
-')"
+# Read the deployed target using the same resource discovery as audit/uninstall.
+target="$(python3 "$(dirname "$0")/cloud-run-resources.py" target)"
 read -r gateway_region worker_region job gateway_image <<< "$target"
-if [[ -n "${SCRIBEFLOW_WORKER_REGION:-}" && "$SCRIBEFLOW_WORKER_REGION" != "$worker_region" ]]; then
-  echo "SCRIBEFLOW_WORKER_REGION differs from the existing Gateway target ($worker_region). Change Job routing explicitly before updating." >&2
-  exit 1
-fi
 
 echo "Existing Gateway: $service ($gateway_region)"
 echo "Existing Worker: $job ($worker_region)"
