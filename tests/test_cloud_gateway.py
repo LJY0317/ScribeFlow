@@ -60,7 +60,14 @@ class CloudGatewayTests(unittest.TestCase):
         self.assertIn("prompt", schema["properties"])
         self.assertIn("retry", schema["properties"])
         self.assertIn("language", schema["properties"])
-        self.assertIn("output_format", schema["properties"])
+        for name in ("transcribe_audio", "retranscribe_audio"):
+            tool = tools[name]
+            output_format = tool.parameters["properties"]["output_format"]
+            self.assertEqual(output_format["enum"], ["txt", "md"])
+            self.assertEqual(output_format["default"], "txt")
+            self.assertNotIn("output_format", tool.parameters.get("required", []))
+            self.assertIn("'txt'", tool.description)
+            self.assertIn("'md'", tool.description)
         self.assertIn("file_id", schema.get("required", []))
         self.assertNotIn("keywords", schema.get("required", []))
         self.assertNotIn("prompt", schema.get("required", []))

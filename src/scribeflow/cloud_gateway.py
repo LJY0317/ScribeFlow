@@ -6,6 +6,7 @@ import base64
 import hashlib
 import logging
 import os
+from typing import Literal
 
 from .cloud_dedup import DeduplicatingCloudRunJobs, FirestoreJobClaims
 from .cloud_run import _FILE_ID, CloudRunJobs, CloudRunTarget
@@ -175,7 +176,7 @@ def create_server():
         options = {}
         if transcript_file_id:
             if not replace_existing or not _FILE_ID.fullmatch(transcript_file_id):
-                raise ValueError("An existing Drive TXT ID is required for explicit replacement")
+                raise ValueError("An existing Drive transcript ID is required for explicit replacement")
             options["transcript_file_id"] = transcript_file_id
         if linked:
             if not _FILE_ID.fullmatch(file_id):
@@ -183,7 +184,7 @@ def create_server():
             credential = linked_credential(token)
             file = check_file(credential, file_id)
             if not file["can_download"] or (not replace_existing and not file["can_save_transcript"]):
-                raise PermissionError("The connected account must be able to read the audio and save its TXT")
+                raise PermissionError("The connected account must be able to read the audio and, for new transcriptions, save the output file")
             if os.path.splitext(file["name"])[1].lower() not in SUPPORTED_AUDIO_SUFFIXES:
                 raise ValueError("Select a supported audio file")
             options.update(owner=str(token.claims["sub"]), drive_envelope=credential.seal(file_id))
@@ -200,34 +201,36 @@ def create_server():
             "prompt is brief factual context, never invented dialogue. "
             "language defaults to automatic detection ('auto'); use 'ko', 'en', "
             "or another supported code to hint a known language. "
+            "output_format selects one output file: 'txt' (default, plain text) or 'md' (Markdown). "
             "Existing transcripts are not overwritten. Repeated requests for "
             "the same file reuse the existing job. Explicit retry=True "
             "is required to repeat a completed/failed job or stale submission; "
-            "retrying can incur new API charges."
+            "retrying can incur new API charges. Do not retranscribe solely to convert an existing transcript to another format."
         ),
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False),
     )
     def transcribe_audio(
         file_id: str, keywords: list[str] | None = None, prompt: str = "",
-        retry: bool = False, language: str = "auto", output_format: str = "txt",
+        retry: bool = False, language: str = "auto", output_format: Literal["txt", "md"] = "txt",
     ) -> dict:
         return start(file_id, keywords, prompt, retry, language, output_format=output_format)
 
     @server.tool(
         description=(
             "Re-transcribe one explicitly selected Drive recording with the configured OpenAI model "
-            "and replace the existing ScribeFlow TXT in place. This incurs OpenAI charges. "
+            "and replace the existing ScribeFlow transcript in place. This incurs OpenAI charges. "
             "Only use when the user explicitly requests replacing that transcription. "
-            "Requires an existing TXT whose recorded source SHA-256 matches the audio. "
-            "Set transcript_file_id when the original TXT is in a different Drive folder; "
-            "the existing TXT is updated at its current ID and location. "
+            "output_format must match the existing file: 'txt' (default, plain text) or 'md' (Markdown). "
+            "Requires an existing transcript whose recorded source SHA-256 matches the audio. "
+            "Set transcript_file_id to select the existing transcript explicitly, including after it has moved to another Drive folder; "
+            "the existing file is updated at its current ID and location without changing its format. "
             "Use get_transcription_status to follow the returned operation."
         ),
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True),
     )
     def retranscribe_audio(
         file_id: str, keywords: list[str] | None = None, prompt: str = "",
-        language: str = "auto", transcript_file_id: str = "", output_format: str = "txt",
+        language: str = "auto", transcript_file_id: str = "", output_format: Literal["txt", "md"] = "txt",
     ) -> dict:
         return start(
             file_id, keywords, prompt, True, language, replace_existing=True,
