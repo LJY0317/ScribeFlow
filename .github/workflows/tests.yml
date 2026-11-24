@@ -38,6 +38,7 @@ jobs:
           bash -n scripts/audit-cloud-storage.sh
           bash -n scripts/preflight-cloud-run.sh
           bash -n scripts/deploy-cloud-run.sh
+          bash -n scripts/update-cloud-run.sh
           bash -n scripts/enable-mcp-access.sh
           bash -n scripts/uninstall-cloud-run.sh
       - name: Validate conservative Artifact Registry policy template

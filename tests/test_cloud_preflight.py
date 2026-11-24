@@ -1,125 +1,126 @@
-"""Release preflight uses mock binaries; never touches a real GCP project."""
+"""Deployment helpers use mock commands; no real Cloud resources are changed."""
 
+import json
 import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+IMAGE = "ghcr.io/example/scribeflow:sha-" + "a" * 40
 
-PREFLIGHT = Path(__file__).resolve().parents[1] / "scripts" / "preflight-cloud-run.sh"
-HEAD = "852053bfc6c849846eae416fa3a667ace224cc06"
 
-
-class CloudPreflightTests(unittest.TestCase):
+class CloudDeploymentTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        root = Path(self.temp.name)
-        self.bin = root / "bin"
-        self.bin.mkdir()
-        self.calls = root / "cloud-calls.log"
-        self.stub(
-            "git",
-            r"""#!/bin/sh
-case "$1" in
-    branch) printf '%s\n' "${FAKE_BRANCH:-main}" ;;
-    status) printf '%s' "${FAKE_DIRTY:-}" ;;
-    rev-parse) printf '%s\n' "${FAKE_LOCAL_SHA}" ;;
-    ls-remote) printf '%s\trefs/heads/main\n' "${FAKE_REMOTE_SHA}" ;;
-    *) echo "Unexpected git command: $*" >&2; exit 9 ;;
-esac
-""",
-        )
-        self.stub(
-            "gcloud",
-            r"""#!/bin/sh
-printf '%s\n' "$*" >> "$FAKE_CLOUD_LOG"
-case "$1 $2 $3" in
-    "billing projects describe") printf 'True\n' ;;
-    "run services describe") printf '{"spec":{"template":{"spec":{"containers":[{"image":"asia-northeast3-docker.pkg.dev/demo/scribeflow/scribeflow:old"}]}}}}\n' ;;
-    "run jobs describe") printf '{"spec":{"template":{"containers":[{"image":"asia-northeast3-docker.pkg.dev/demo/scribeflow/scribeflow:old"}]}}}\n' ;;
-    "run jobs executions") printf 'No recent executions\n' ;;
-    *) : ;;
-esac
-""",
-        )
-
-    def stub(self, name, content):
-        path = self.bin / name
-        path.write_text(content, encoding="utf-8")
-        path.chmod(0o755)
-
-    def run_preflight(self, **env_overrides):
-        env = {
-            **os.environ,
-            "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
-            "FAKE_CLOUD_LOG": str(self.calls),
-            "FAKE_LOCAL_SHA": HEAD,
-            "FAKE_REMOTE_SHA": HEAD,
-            "GCP_PROJECT": "example-project",
-            "SCRIBEFLOW_GOOGLE_CLIENT_ID": "test-id.apps.googleusercontent.com",
-            "SCRIBEFLOW_GOOGLE_EMAIL": "test@example.org",
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.calls = self.root / "calls"
+        self.service = {
+            "metadata": {"name": "scribeflow-mcp", "labels": {"cloud.googleapis.com/location": "asia-northeast3"}},
+            "spec": {"template": {"spec": {"containers": [{
+                "image": "old-gateway",
+                "env": [
+                    {"name": "SCRIBEFLOW_REGION", "value": "us-central1"},
+                    {"name": "SCRIBEFLOW_JOB", "value": "scribeflow-transcribe"},
+                    {"name": "SCRIBEFLOW_GOOGLE_ADDITIONAL_EMAILS", "value": "private@example.org"},
+                    {"name": "SCRIBEFLOW_GOOGLE_CLIENT_SECRET", "valueFrom": {"secretKeyRef": {"name": "private-secret"}}},
+                ],
+            }]}}},
         }
-        env.update(env_overrides)
-        return subprocess.run(
-            ["bash", str(PREFLIGHT)],
-            env=env, capture_output=True, text=True, timeout=20,
+        self.fixture = self.root / "services.json"
+        self.fixture.write_text(json.dumps([self.service]))
+        stub = self.root / "gcloud"
+        stub.write_text(
+            """#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_CLOUD_LOG"
+case "$1 $2 $3" in
+    "run services list")
+        case "$*" in
+            *--format=json*) cat "$FAKE_SERVICES" ;;
+            *) printf '%s' "${FAKE_EXISTING_SERVICE:-}" ;;
+        esac ;;
+    "run jobs list") printf '%s' "${FAKE_EXISTING_JOB:-}" ;;
+    "run jobs describe") echo old-worker ;;
+    "run jobs update"|"run services update"|"services enable "*) : ;;
+    *) echo "Unexpected command: $*" >&2; exit 9 ;;
+esac
+"""
         )
+        stub.chmod(0o755)
 
-    def test_success_is_read_only_and_prints_only_images_not_secrets(self):
-        result = self.run_preflight()
+    def run_script(self, script="update-cloud-run.sh", *args, **overrides):
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("SCRIBEFLOW_") and k != "OPENAI_BASE_URL"}
+        env.update({
+            "PATH": str(self.root) + os.pathsep + os.environ["PATH"],
+            "FAKE_CLOUD_LOG": str(self.calls),
+            "FAKE_SERVICES": str(self.fixture),
+            "GCP_PROJECT": "example-project",
+            "SCRIBEFLOW_IMAGE": IMAGE,
+        })
+        env.update(overrides)
+        self.calls.unlink(missing_ok=True)
+        result = subprocess.run(["bash", str(SCRIPTS / script), *args],
+                                env=env, capture_output=True, text=True, timeout=20)
+        calls = self.calls.read_text().splitlines() if self.calls.exists() else []
+        return result, calls
+
+    def test_default_updates_only_images_at_existing_regions(self):
+        result, calls = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("READ-ONLY PREFLIGHT PASSED", result.stdout)
-        self.assertIn("Existing image(s):", result.stdout)
-        self.assertNotIn("test-id.apps", result.stdout)
-        self.assertNotIn("test@example.org", result.stdout)
-        calls = self.calls.read_text(encoding="utf-8").splitlines()
-        self.assertGreaterEqual(len(calls), 10)
-        read_only_prefixes = (
-            "projects describe", "billing projects describe",
-            "run services describe", "run jobs describe",
-            "run jobs executions list", "firestore databases describe",
-            "artifacts repositories describe", "secrets versions describe",
-        )
-        self.assertTrue(all(
-            command.startswith(read_only_prefixes) for command in calls
-        ), calls)
+        self.assertEqual(calls[1:], [
+            f"run jobs update scribeflow-transcribe --image {IMAGE} --project=example-project --region=us-central1",
+            f"run services update scribeflow-mcp --image {IMAGE} --project=example-project --region=asia-northeast3",
+        ])
+        self.assertNotIn("private@example.org", result.stdout)
+        self.assertNotIn("private-secret", result.stdout)
 
-    def test_stale_or_dirty_or_nonmain_checkouts_never_call_cloud(self):
-        cases = [
-            {"FAKE_BRANCH": "feature"},
-            {"FAKE_DIRTY": " M README.md"},
-            {"FAKE_REMOTE_SHA": "f" * 40},
-        ]
-        for overrides in cases:
-            with self.subTest(overrides=overrides):
-                self.calls.unlink(missing_ok=True)
-                result = self.run_preflight(**overrides)
+    def test_dry_run_is_read_only_without_oauth_configuration(self):
+        result, calls = self.run_script("preflight-cloud-run.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("old-gateway", result.stdout)
+        self.assertIn("old-worker", result.stdout)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[0].startswith("run services list "))
+        self.assertTrue(calls[1].startswith("run jobs describe "))
+        self.assertIn("--region=us-central1", calls[1])
+
+    def test_worker_only_uses_same_deployed_routing(self):
+        result, calls = self.run_script("deploy-worker-only.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[1].startswith("run jobs update "))
+        self.assertIn("--region=us-central1", calls[1])
+
+    def test_ambiguous_or_missing_gateway_does_not_update_anything(self):
+        for services in ([], [self.service, self.service]):
+            with self.subTest(count=len(services)):
+                self.fixture.write_text(json.dumps(services))
+                result, calls = self.run_script()
                 self.assertNotEqual(result.returncode, 0)
-                self.assertFalse(self.calls.exists())
+                self.assertEqual(len(calls), 1)
 
-    def test_unset_oauth_settings_stop_before_cloud_deployment(self):
-        result = self.run_preflight(SCRIBEFLOW_GOOGLE_EMAIL="")
+    def test_explicit_gateway_selection_and_conflicting_worker_region(self):
+        result, calls = self.run_script(SCRIBEFLOW_REGION="asia-northeast3",
+                                        SCRIBEFLOW_WORKER_REGION="asia-northeast3")
         self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn("READ-ONLY PREFLIGHT PASSED", result.stdout)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--region=asia-northeast3", calls[0])
+        self.assertIn("differs from the existing Gateway target", result.stderr)
 
-    def test_missing_image_reference_is_not_mistaken_for_valid_deployment(self):
-        self.stub(
-            "gcloud",
-            r"""#!/bin/sh
-if [ "$1 $2 $3" = "billing projects describe" ]; then
-  echo True
-elif [ "$1 $2 $3" = "run services describe" ]; then
-  echo '{}'
-else
-  echo '{}'
-fi
-""",
-        )
-        result = self.run_preflight()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Could not identify current deployed image", result.stderr)
+    def test_initial_install_does_not_overwrite_existing_resources(self):
+        for existing in ({"FAKE_EXISTING_SERVICE": "scribeflow-mcp"},
+                         {"FAKE_EXISTING_JOB": "scribeflow-transcribe"}):
+            with self.subTest(existing=existing):
+                result, calls = self.run_script("deploy-cloud-run.sh", **existing)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("update-cloud-run.sh", result.stderr)
+                self.assertEqual(len(calls), 3)
+                self.assertTrue(calls[0].startswith("services enable run.googleapis.com "))
+                self.assertTrue(calls[1].startswith("run services list "))
+                self.assertTrue(calls[2].startswith("run jobs list "))
 
 
 if __name__ == "__main__":

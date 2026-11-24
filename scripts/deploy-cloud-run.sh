@@ -1,9 +1,28 @@
 #!/usr/bin/env bash
-# One Google Cloud Run MCP service + one on-demand transcription Job.
+# Initial installation of one Cloud Run MCP service and one transcription Job.
+# Normal updates use update-cloud-run.sh; --reconfigure deliberately reapplies setup.
 # Google OAuth is configured in the existing Google Cloud project.
 set -euo pipefail
 
-for name in GCP_PROJECT SCRIBEFLOW_GOOGLE_CLIENT_ID SCRIBEFLOW_GOOGLE_EMAIL; do
+case "${1:-}" in
+  "") reconfigure=false ;;
+  --reconfigure) reconfigure=true ;;
+  *) echo "Usage: $0 [--reconfigure]" >&2; exit 2 ;;
+esac
+: "${GCP_PROJECT:?Set GCP_PROJECT}"
+# Run must be enabled before discovery in a new project.
+gcloud services enable run.googleapis.com --project "$GCP_PROJECT"
+if ! "$reconfigure"; then
+  services="$(gcloud run services list --project "$GCP_PROJECT" --filter='metadata.name=scribeflow-mcp' --format='value(metadata.name)')"
+  jobs="$(gcloud run jobs list --project "$GCP_PROJECT" --filter='metadata.name=scribeflow-transcribe' --format='value(metadata.name)')"
+  if [[ -n "$services$jobs" ]]; then
+    echo "Existing ScribeFlow deployment found. Use scripts/update-cloud-run.sh to preserve its configuration." >&2
+    echo "For an intentional migration or incomplete initial setup, supply the full configuration and use --reconfigure." >&2
+    exit 1
+  fi
+fi
+
+for name in SCRIBEFLOW_GOOGLE_CLIENT_ID SCRIBEFLOW_GOOGLE_EMAIL; do
   if [[ -z "${!name:-}" ]]; then
     echo "Missing $name (see docs/cloud-run.md)" >&2
     exit 1
@@ -30,8 +49,7 @@ GATEWAY_SA="scribeflow-gateway@${GCP_PROJECT}.iam.gserviceaccount.com"
 PROJECT_NUMBER="$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')"
 URL="https://${SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
 
-gcloud config set project "$GCP_PROJECT"
-gcloud services enable run.googleapis.com secretmanager.googleapis.com \
+gcloud services enable secretmanager.googleapis.com \
   firestore.googleapis.com drive.googleapis.com --project "$GCP_PROJECT"
 
 for name in "$OPENAI_SECRET" "$GOOGLE_SECRET"; do
