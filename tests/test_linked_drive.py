@@ -37,7 +37,7 @@ class LinkedDriveTests(unittest.TestCase):
             self.assertEqual(result["nextPageToken"], "more")
             self.assertTrue(result["incompleteSearch"])
 
-    def test_worker_uses_only_the_job_accounts_private_config_and_folder(self):
+    def test_worker_uses_only_the_job_accounts_token_and_private_directory(self):
         key = Fernet.generate_key().decode()
         with patch.dict(os.environ, {
             "OPENAI_API_KEY": "test",
@@ -50,21 +50,15 @@ class LinkedDriveTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 DriveCredential.open(envelope, "another_" + "b" * 26)
 
-            def inspect_config(file_id, **kwargs):
-                path = Path(os.environ["RCLONE_CONFIG"])
-                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-                configuration = path.read_text()
-                token_line = next(line for line in configuration.splitlines() if line.startswith("token = "))
-                self.assertEqual(json.loads(token_line.removeprefix("token = "))["access_token"], "google-b")
-                self.assertIn(f"team_drive = {DRIVE_ID}", configuration)
-                self.assertEqual(os.environ["SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID"], FOLDER_ID)
+            def inspect_config(credential, file_id, private, **kwargs):
+                self.assertEqual(credential.access_token, "google-b")
+                self.assertEqual(Path(os.environ["SCRIBEFLOW_CACHE_DIR"]).parent, private)
+                self.assertNotIn("RCLONE_CONFIG", os.environ)
+                self.assertFalse((private / "rclone.conf").exists())
                 self.assertEqual(file_id, FILE_ID)
-                return {"ok": True, "config_path": path}
+                return {"ok": True, "private": private}
 
-            with patch("scribeflow.cloud_worker.check_file", return_value={
-                "can_download": True, "can_save_transcript": True,
-                "drive_id": DRIVE_ID, "parent_id": FOLDER_ID,
-            }), patch("scribeflow.cloud_worker.transcribe", side_effect=inspect_config):
+            with patch("scribeflow.cloud_worker.transcribe_drive", side_effect=inspect_config):
                 result = run_job()
             self.assertTrue(result["ok"])
-            self.assertFalse(result["config_path"].exists())
+            self.assertFalse(result["private"].exists())

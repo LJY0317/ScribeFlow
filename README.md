@@ -76,23 +76,23 @@ scribeflow transcribe '파일_ID' --json
 
 새로 전사한 결과의 JSON에는 `status`, `source`, `transcript`, `model`, `url`(Drive인 경우), `transcript_file_id`(Drive ID를 확인한 경우)가 포함됩니다. 다른 폴더에 있는 기존 전사문을 갱신한 결과는 존재하지 않는 인접 경로 대신 `transcript=null`과 실제 Drive ID·URL을 반환합니다. 일반 요청에서 동명 전사문의 원본 SHA-256이 일치하면 `skipped_existing`, 해시가 없으면 `unverified_existing`, 불일치하면 `source_mismatch`를 반환합니다. `--replace-existing`을 명시하면 해시가 일치하는 기존 전사문을 재전사 결과로 갱신합니다. 로컬 환경의 모델은 `SCRIBEFLOW_TRANSCRIPTION_MODEL`로 지정할 수 있으며 기본값은 `gpt-transcribe`입니다.
 
-`scan --models`는 기존 TXT 끝부분을 읽고 `transcribed`에 각 원본의 Drive ID, TXT ID, 해시 검증 상태, 공급자·모델 ID·스냅샷·전사 시각을 반환합니다. `model_counts`에서 모델별 개수를 확인할 수 있습니다. 오래된 TXT에 해시만 있으면 `model`은 `null`입니다. `--limit`은 반환 목록의 크기를 제한하며 개수는 조회 범위 전체를 반영합니다. 에이전트는 `status=skipped_existing`이며 원하는 구형 `model_id`와 일치하는 원본 ID를 골라 재전사 후보 목록을 만들 수 있습니다. 조회 결과는 표준 출력에만 표시됩니다.
+`scan --models`는 기존 TXT·MD 끝부분을 읽고 `transcribed`에 각 원본의 Drive ID, 전사문 ID·형식, 해시 검증 상태, 공급자·모델 ID·스냅샷·전사 시각을 반환합니다. `model_counts`에서 모델별 개수를 확인할 수 있습니다. 두 형식이 모두 있으면 각각 조회하며, 해시만 있는 구형 전사문은 `model`은 `null`입니다. `--limit`은 반환 목록의 크기를 제한하며 개수는 조회 범위 전체를 반영합니다. 에이전트는 `status=skipped_existing`이며 원하는 구형 `model_id`와 일치하는 원본 ID를 골라 재전사 후보 목록을 만들 수 있습니다. 조회 결과는 표준 출력에만 표시됩니다.
 
 ### ChatGPT 원격 MCP 사용
 
 [Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 전달합니다. 연결 계정별 Drive 전체 검색은 [선택 설정](docs/cloud-run.md#연결-계정별-google-drive-접근)입니다.
 
-- `transcribe_audio`는 새 녹음을 전사합니다. 기본 `output_format="txt"`이며, `output_format="md"`를 선택하면 Markdown으로 저장합니다. 같은 파일의 작업을 반복 요청하면 기존 실행 상태를 반환하고 기존 전사문을 보호합니다. 작업 실패 등을 다시 시도할 때 `retry=True`를 사용할 수 있습니다.
+- `transcribe_audio`는 새 녹음을 전사합니다. 기본 `output_format="txt"`이며, `output_format="md"`를 선택하면 Markdown으로 저장합니다. 같은 파일의 작업을 반복 요청하면 기존 실행 상태와 확인된 결과를 반환합니다. 원본 SHA-256이 일치하는 인접 TXT·MD가 이미 있으면 실제 형식과 파일 ID를 반환하며 유료 전사를 하지 않습니다. 작업 실패 등을 다시 시도할 때 `retry=True`를 사용할 수 있습니다.
 - `retranscribe_audio`는 선택한 녹음을 현재 설정 모델로 다시 전사하고, 원본 SHA-256이 일치하는 기존 TXT 또는 선택한 Markdown(`output_format="md"`)의 내용만 갱신합니다. 같은 Drive 파일 ID와 링크가 유지됩니다. 새 전사에 OpenAI API 사용료가 발생합니다.
 - 기존 TXT를 다른 Google Drive 폴더로 이동한 경우에는 `retranscribe_audio(file_id="원본_음성_ID", transcript_file_id="기존_TXT_ID")`로 **기존 TXT 파일을 직접 지정**할 수 있습니다. 원본 SHA-256과 기존 TXT 말꼬리의 SHA-256이 일치해야 하며, 일치하지 않으면 전사 API를 호출하지 않습니다. 갱신 후 TXT의 파일 ID와 현재 폴더는 그대로 유지됩니다. `transcript_file_id`를 생략하면 원본 폴더를 먼저 확인합니다.
-- 원본 폴더에 동명 TXT가 없으면 연결 계정의 Drive에서 **동일 파일명의 TXT를 찾아 원본 SHA-256이 일치하는 파일 한 개만** 갱신합니다. 일치 항목이 여러 개면 덮어쓰지 않으며, 지정한 TXT ID는 파일명 검색보다 우선합니다.
-- `get_transcription_status`는 작업 상태를 조회합니다. 폴더에서 녹음이나 TXT를 찾을 때는 Google Drive 연결이나 위의 `scan` 명령을 이용합니다. 연결된 Google Drive에서 TXT를 읽을 수 있으면 파일 끝의 `Model ID`를 ChatGPT에서 직접 확인할 수 있습니다.
+- 원본 폴더에 선택한 형식의 동명 전사문이 없으면 Drive에서 동일 파일명과 원본 SHA-256이 일치하는 후보 한 개만 갱신합니다. 여러 후보 또는 다른 이름의 전사문은 파일 ID로 직접 지정하세요. CLI에서도 `--replace-existing --transcript-file-id ID --format md` (TXT는 `--format txt`)로 기존 파일을 지정할 수 있습니다.
+- `get_transcription_status`는 실행 상태와 결과를 조회합니다. 완료 시 실제 형식·Drive 파일 ID·URL·모델, 실패 시 오류 코드가 제공됩니다(결과 기록이 없는 이전 작업 등은 상태만 제공). 결과 ID를 기존 Google Drive 플러그인에 전달해 읽거나 변환할 수 있습니다.
 
-**형식 변환은 재전사가 아닙니다.** 이미 만들어진 TXT를 Markdown·Google Docs·Sheets·Slides로 옮길 때에는 새 전사 요청을 하지 말고 ChatGPT의 기존 Google Drive 플러그인에서 원문을 읽고 결과 문서를 만드세요. ScribeFlow의 `output_format`은 처음 전사할 때 저장 형식을 선택하는 용도입니다. 원격 중복 실행 예약은 원본 오디오 ID 기준이므로, 단순 형식 변환을 위해 `retry=True`를 호출하면 전사 API 비용이 재발생할 수 있습니다.
+**형식 변환은 재전사가 아닙니다.** 이미 만들어진 TXT를 Markdown·Google Docs·Sheets·Slides로 옮길 때에는 새 전사 요청을 하지 말고 ChatGPT의 기존 Google Drive 플러그인에서 원문을 읽고 결과 문서를 만드세요. 신규 전사의 `output_format`은 저장 형식을 선택하고, 재전사에서는 기존 파일의 형식을 지정합니다. 재전사는 정확도 개선 등 사용자가 명시한 목적에만 사용하세요.
 
 ## 원문 보존과 오디오 처리
 
-- **본문에는 인식된 발언과 원본 오디오의 시간 범위를 출력**합니다. 문단 구분과 공백을 정리합니다. TXT 끝에는 원본 파일명, 음성 길이, 원본 크기(바이트), 감지 언어 목록, API 공급자, 요청 모델 ID, 공개 스냅샷, UTC 전사 완료 시각, ScribeFlow 버전을 기록합니다. `gpt-transcribe`의 스냅샷은 `미공개`로 표시합니다. 감지 언어는 API가 보고한 언어 코드를 구간 순서로 모아 중복을 제거하며, 보고된 코드가 없으면 `확인 불가`로 표시합니다. 원본의 SHA-256은 기존과 같은 형식으로 마지막 줄에 기록합니다.
+- **본문에는 인식된 발언과 원본 오디오의 시간 범위를 출력**합니다. 문단 구분과 공백을 정리합니다. TXT·MD 끝에는 원본 파일명, 음성 길이, 원본 크기(바이트), 감지 언어 목록, API 공급자, 요청 모델 ID, 공개 스냅샷, UTC 전사 완료 시각, ScribeFlow 버전을 기록합니다. `gpt-transcribe`의 스냅샷은 `미공개`로 표시합니다. 감지 언어는 API가 보고한 언어 코드를 구간 순서로 모아 중복을 제거하며, 보고된 코드가 없으면 `확인 불가`로 표시합니다. 원본의 SHA-256은 기존과 같은 형식으로 마지막 줄에 기록합니다.
 - SHA-256은 파일명·Drive 파일 ID가 달라져도 **동일한 바이트의 음성 파일인지** 비교할 수 있습니다. Drive가 해시를 제공하면 원본 전체를 다시 내려받지 않고 검증합니다. 다만 파일 재인코딩 시 값이 달라지며, 해시 일치는 전사문 발언 내용의 정확성을 증명하지 않습니다.
 - **지원 입력 형식:** `.flac`, `.mp3`, `.mp4`, `.mpeg`, `.mpga`, `.m4a`, `.ogg`, `.wav`, `.webm` (대소문자 구분 없음). Google Drive 파일 스캔·파일 ID 처리·전사 엔진이 같은 목록을 사용합니다. `.aac`, `.qta`, `.opus`, `.wma` 등은 자동으로 손실 변환하지 않고 명확히 거부합니다.
 - **원본 음성 보존:** 지원 형식이고 원본 크기가 25MB 이하이면 변환·분할 없이 그대로 OpenAI API에 전달합니다. 파일 크기가 초과할 때만 FFmpeg 스트림 복사(`-c:a copy`)로 원래 압축된 오디오를 유지하며 독립적으로 재생 가능한 조각을 만듭니다. 각 조각의 실제 크기를 API 호출 전에 검사하고, 크면 길이를 줄여 다시 분할합니다. 손실 재인코딩은 자동으로 하지 않습니다. 지원하지 않는 형식은 안내 후 중단합니다.
@@ -107,11 +107,11 @@ scribeflow transcribe '파일_ID' --json
 
 GitHub에서 받은 소스 폴더에서 실행하는 경우 캐시는 **프로젝트 내부 `.scribeflow/cache/`**에 저장됩니다. 이 폴더는 Git 업로드 대상에서 제외됩니다. 별도로 패키지만 설치해 사용하는 경우에는 OS 표준 사용자 캐시 폴더를 사용합니다. 필요하면 `SCRIBEFLOW_CACHE_DIR`로 경로를 변경할 수 있습니다. 필요한 경우 원본 코덱을 보존한 분할본, 구간별 전사문, manifest 및 잠금 파일은 이 캐시에만 생성됩니다.
 
-- **성공한 전사는 최종 TXT만 게시하고 중간 작업 파일을 즉시 제거합니다.** 큰 녹음은 각 오디오 구간의 전사문이 저장되는 즉시 해당 오디오 조각도 제거합니다. Google Drive에는 원본 녹음과 최종 TXT만 남으며, 빈 발언만 반환된 경우에는 내용 없는 TXT를 게시하지 않습니다.
+- **성공한 전사는 최종 전사문만 게시하고 중간 작업 파일을 즉시 제거합니다.** 큰 녹음은 각 오디오 구간의 전사문이 저장되는 즉시 해당 오디오 조각도 제거합니다. Google Drive에는 원본 녹음과 최종 전사문만 남으며, 인식된 발언이 없으면 빈 전사문을 게시하지 않습니다.
 - 로컬 CLI에서 **실패한 전사 캐시의 기본 보존 기간은 24시간**, 전체 **256MiB는 소프트 용량 예산**입니다. 만료되거나 초과해도 다음 전사 또는 수동 정리 시에만 정리되므로 실시간 절대 상한은 아닙니다. 활성 작업은 잠금으로 보호합니다.
 - 실패 시에도 중간 파일을 즉시 폐기하려면 `SCRIBEFLOW_FAILED_CACHE_MODE=discard`로 실행합니다. 기본값 `retry`는 부분 전사문을 잠깐 남겨 같은 조건의 재시도 때 API 비용을 줄입니다. **`discard`는 실패 후 재시도할 때 이미 처리된 음성도 다시 과금될 수 있습니다.**
 - `scribeflow cache status`로 남은 용량을 확인하고 `scribeflow cache clean`으로 정리합니다. 별도의 상시 청소 서비스는 없습니다.
-- 원격 Cloud Run Job은 성공·실패 모두 실행용 임시 파일시스템이 종료 시 사라집니다. Firestore 중복 방지 기록은 날짜별 첫 전사 요청이 들어올 때 7일 지난 기록부터 정리합니다.
+- 원격 Cloud Run Job은 실행용 임시 파일시스템이 종료 시 사라집니다. 연결 계정 모드에서는 전체 분할본을 보관하지 않고 각 검증된 조각을 처리합니다. 작업 결과와 중복 방지 기록은 기존 Firestore에 7일간 보관하며 다음 전사 요청에서 만료된 기록을 정리합니다. SDK의 자동 재요청은 사용하지 않으며, 명시적 재시도는 이미 처리한 구간을 다시 과금할 수 있습니다.
 
 ## 전사 정확도 비교 (별도 API 요금 없음)
 
@@ -126,7 +126,7 @@ scribeflow evaluate 기준.txt 기존.txt 개선.txt --keyword '하나손해보�
 ## 테스트
 
 ```bash
-uv run python -m unittest discover -s tests -v
+uv run --locked --extra cloud --python 3.11 python -m unittest discover -s tests -v
 ```
 
 현재 별도의 웹 UI, 화자 자동 식별 또는 AI 요약 모델은 포함하지 않습니다.

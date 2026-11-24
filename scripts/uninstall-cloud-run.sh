@@ -43,8 +43,11 @@ for kind in services jobs; do
 done
 for role in roles/run.viewer roles/datastore.user; do
   gcloud projects remove-iam-policy-binding "$GCP_PROJECT" \
-    --member="serviceAccount:$GATEWAY" --role="$role" >/dev/null 2>&1 || true
+    --member="serviceAccount:$GATEWAY" --role="$role" --condition=None >/dev/null 2>&1 || true
 done
+gcloud projects remove-iam-policy-binding "$GCP_PROJECT" \
+  --member="serviceAccount:$WORKER" --role=roles/datastore.user \
+  --condition="expression=resource.name==\"projects/${GCP_PROJECT}/databases/scribeflow-oauth\",title=scribeflow-worker-results" >/dev/null 2>&1 || true
 for name in "$OPENAI_SECRET" "$RCLONE_SECRET"; do
   gcloud secrets remove-iam-policy-binding "$name" --project="$GCP_PROJECT" \
     --member="serviceAccount:$WORKER" \

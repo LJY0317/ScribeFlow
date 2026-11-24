@@ -71,7 +71,7 @@ def _drive_metadata(file_id: str, token: str) -> dict:
     if file_id != "root" and not _ID.fullmatch(file_id):
         raise ValueError("Invalid Google Drive metadata ID")
     query = urlencode({
-        "fields": "id,name,mimeType,parents,trashed,capabilities(canEdit)",
+        "fields": "id,name,mimeType,parents,trashed,capabilities(canEdit,canModifyContent)",
         "supportsAllDrives": "true",
     })
     url = _DRIVE_API + file_id + "?" + query
@@ -102,16 +102,20 @@ def update_transcript(
         return json.loads(reply.read())
 
 
-def read_transcript(file_id: str, token: str, *, expected_extension: str = "") -> bytes:
-    """Read an editable TXT/Markdown target by ID, before paid transcription."""
-    metadata = _drive_metadata(file_id, token)
+def read_transcript(file_id: str, token: str, *, expected_extension: str = "",
+                    require_editable: bool = True, metadata: dict | None = None) -> bytes:
+    """Read a TXT/Markdown target by ID, before paid transcription."""
+    if not _ID.fullmatch(file_id):
+        raise ValueError("Invalid Google Drive transcript ID")
+    metadata = metadata if metadata is not None else _drive_metadata(file_id, token)
     name = str(metadata.get("name", "")).lower()
     if (metadata.get("trashed") or metadata.get("mimeType") not in {"text/plain", "text/markdown"}
             or not name.endswith((".txt", ".md"))):
         raise ValueError("The selected Google Drive file must be an existing TXT or Markdown transcript")
     if expected_extension and not name.endswith(expected_extension):
         raise ValueError("The existing transcript does not match the selected output format")
-    if metadata.get("capabilities", {}).get("canEdit") is False:
+    capabilities = metadata.get("capabilities", {})
+    if require_editable and (capabilities.get("canEdit") is False or capabilities.get("canModifyContent") is False):
         raise PermissionError("This Google Drive transcript cannot be edited")
     request = Request(
         _DRIVE_API + file_id + "?" + urlencode({"alt": "media", "supportsAllDrives": "true"}),

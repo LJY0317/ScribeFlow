@@ -12,6 +12,7 @@ claim/retry races even across distinct Cloud Run gateway instances.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -32,7 +33,7 @@ UNKNOWN_SUBMISSION_RETRY_SECONDS = 2 * 60 * 60
 CLAIM_RETENTION_DAYS = 7
 
 
-def _starting_document(now: int, owner: str = "") -> dict:
+def _starting_document(now: int, owner: str = "", output_format: str = "txt") -> dict:
     # The retention period is much longer than the Cloud Run task's one-hour limit.
     expires = (
         datetime.fromtimestamp(now, tz=timezone.utc)
@@ -42,6 +43,7 @@ def _starting_document(now: int, owner: str = "") -> dict:
         "started_at": {"integerValue": str(now)},
         "operation": {"stringValue": ""},
         "owner": {"stringValue": owner},
+        "output_format": {"stringValue": output_format},
         "expires_at": {"timestampValue": expires},
     }}
 
@@ -67,10 +69,10 @@ class FirestoreJobClaims:
     def _document_url(self, key: str) -> str:
         return self.collection_url + "/" + key
 
-    def create(self, key: str, now: int, *, owner: str = "") -> dict | None:
+    def create(self, key: str, now: int, *, owner: str = "", output_format: str = "txt") -> dict | None:
         response = self.session.request(
             "POST", self.collection_url,
-            params={"documentId": key}, json=_starting_document(now, owner),
+            params={"documentId": key}, json=_starting_document(now, owner, output_format),
             timeout=20,
         )
         if response.status_code == 409:  # atomic already-exists conflict
@@ -87,12 +89,12 @@ class FirestoreJobClaims:
         response.raise_for_status()
         return response.json()
 
-    def reset(self, key: str, previous: dict, now: int, *, owner: str = "") -> dict | None:
+    def reset(self, key: str, previous: dict, now: int, *, owner: str = "", output_format: str = "txt") -> dict | None:
         """Compare-and-swap an explicitly retried failed or stale claim."""
         response = self.session.request(
             "PATCH", self._document_url(key),
             params={"currentDocument.updateTime": previous["updateTime"]},
-            json=_starting_document(now, owner), timeout=20,
+            json=_starting_document(now, owner, output_format), timeout=20,
         )
         if response.status_code in (404, 409, 412):
             return None  # lost race; another caller owns this claim
@@ -105,15 +107,32 @@ class FirestoreJobClaims:
         response = self.session.request(
             "PATCH", self._document_url(key),
             params={"currentDocument.updateTime": claim["updateTime"]},
-            json={"fields": {
-                "started_at": fields["started_at"],
-                "operation": {"stringValue": operation},
-                "expires_at": fields["expires_at"],
-                "owner": fields.get("owner", {"stringValue": ""}),
-            }},
+            json={"fields": {**fields, "operation": {"stringValue": operation}}},
             timeout=20,
         )
         response.raise_for_status()
+
+    @staticmethod
+    def _result_key(execution: str) -> str:
+        return "result_" + hashlib.sha256(execution.encode()).hexdigest()
+
+    def write_result(self, execution: str, owner: str, result: dict) -> None:
+        """One small receipt per execution, governed by the existing expiry sweep."""
+        fields = _starting_document(int(time.time()), owner)["fields"]
+        response = self.session.request(
+            "PATCH", self._document_url(self._result_key(execution)),
+            json={"fields": {"owner": fields["owner"], "expires_at": fields["expires_at"],
+                             "result": {"stringValue": json.dumps(result, ensure_ascii=False)}}},
+            timeout=20,
+        )
+        response.raise_for_status()
+
+    def read_result(self, execution: str) -> tuple[str, dict] | None:
+        document = self.read(self._result_key(execution))
+        if not document:
+            return None
+        fields = document["fields"]
+        return fields["owner"]["stringValue"], json.loads(fields["result"]["stringValue"])
 
     def owns_operation(self, owner: str, operation: str) -> bool:
         if not operation:
@@ -158,6 +177,7 @@ class FirestoreJobClaims:
         if response.status_code in (409, 412):
             return
         response.raise_for_status()
+        marker_version = response.json().get("updateTime")
         self._cleanup_day = day
 
         response = self.session.request(
@@ -185,6 +205,13 @@ class FirestoreJobClaims:
             # A competing retry can reset a claim between the query and deletion.
             if any(status.get("code", 0) not in (0, 5, 9) for status in response.json()["status"]):
                 raise RuntimeError("Firestore could not delete one or more expired claims")
+        if len(writes) == _CLEANUP_LIMIT and marker_version:
+            # Let the next real request drain another bounded batch, not an unbounded loop.
+            response = self.session.request("DELETE", self._document_url(_CLEANUP_MARKER),
+                                            params={"currentDocument.updateTime": marker_version}, timeout=20)
+            if response.status_code not in (404, 409, 412):
+                response.raise_for_status()
+            self._cleanup_day = None
 
 
 class DeduplicatingCloudRunJobs:
@@ -203,9 +230,25 @@ class DeduplicatingCloudRunJobs:
         self.clock = clock
 
     def status(self, operation: str, *, owner: str = "") -> dict:
-        if owner and not self.claims.owns_operation(owner, operation):
+        known_owner = not owner or self.claims.owns_operation(owner, operation)
+        return self._with_result(self.backend.status(operation), owner=owner, require_receipt=not known_owner)
+
+    def _with_result(self, state: dict, *, owner: str = "", require_receipt: bool = False) -> dict:
+        result = dict(state)
+        execution = result.pop("execution", None)
+        receipt = None
+        if execution and result.get("status") in ("completed", "failed"):
+            try:
+                receipt = self.claims.read_result(execution)
+            except Exception as exc:
+                logger.warning("Result receipt unavailable (%s)", type(exc).__name__)
+        if require_receipt and (receipt is None or receipt[0] != owner):
             raise PermissionError("This operation does not belong to the connected account")
-        return self.backend.status(operation)
+        if receipt is not None and (not owner or receipt[0] == owner):
+            result.update(receipt[1])
+        elif execution and result.get("status") in ("completed", "failed"):
+            result["result_available"] = False
+        return result
 
     def _submit(
         self, key: str, claim: dict, file_id: str,
@@ -220,15 +263,14 @@ class DeduplicatingCloudRunJobs:
             **({"output_format": output_format} if output_format != "txt" else {}),
             **({"transcript_file_id": transcript_file_id} if transcript_file_id else {}),
             **({"drive_envelope": drive_envelope} if drive_envelope else {}),
+            **({"owner": claim["fields"]["owner"]["stringValue"]} if drive_envelope else {}),
         )
         try:
             self.claims.publish(key, claim, result["operation"])
         except Exception:
-            # Linked-mode status requires a confirmed owner record.
-            if drive_envelope:
-                result.pop("operation", None)
             result["warning"] = (
-                "Job started but its duplicate-protection record could not be confirmed. Do not submit again."
+                "Job started but its duplicate-protection record could not be confirmed. "
+                "Status may be unavailable until the result is recorded. Do not submit again."
             )
         return result
 
@@ -257,7 +299,7 @@ class DeduplicatingCloudRunJobs:
             )
 
         key = hashlib.sha256(file_id.encode("utf-8")).hexdigest()
-        ownership = {"owner": owner} if owner else {}
+        ownership = {"owner": owner, "output_format": output_format}
         for _ in range(4):
             now = int(self.clock())
             claim = self.claims.create(key, now, **ownership)
@@ -302,6 +344,13 @@ class DeduplicatingCloudRunJobs:
                     if claim is not None:
                         return submit(claim)
                     continue
+                details = {}
+                if visible_operation:
+                    enriched = self._with_result(current, owner=owner)
+                    details = {name: value for name, value in enriched.items() if name not in ("status", "operation", "logs_url")}
+                    recorded_format = details.get("output_format") or existing["fields"].get("output_format", {}).get("stringValue")
+                    if recorded_format and recorded_format != output_format:
+                        details.update(output_format=recorded_format, requested_output_format=output_format)
                 return {
                     "status": (
                         "previous_failed" if state == "failed"
@@ -309,6 +358,7 @@ class DeduplicatingCloudRunJobs:
                         else "already_running"
                     ),
                     **visible_operation,
+                    **details,
                     "duplicate": True,
                 }
 

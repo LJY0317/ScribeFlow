@@ -39,7 +39,7 @@ async def _check_remote_connection(server: str, file_id: str | None) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="scribeflow",
-        description="한국어 긴 녹음을 분할하고 OpenAI GPT-Transcribe로 전사합니다.",
+        description="다국어 긴 녹음을 OpenAI로 전사하여 TXT 또는 Markdown으로 저장합니다.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     scan.add_argument("--recursive", action="store_true")
     scan.add_argument("--limit", type=int, default=50)
     scan.add_argument("--json", action="store_true", help="에이전트용 JSON 출력")
-    scan.add_argument("--models", action="store_true", help="기존 TXT의 모델·스냅샷과 음성 파일 ID 조회")
+    scan.add_argument("--models", action="store_true", help="기존 전사문의 모델·스냅샷과 음성 파일 ID 조회")
 
     remote = sub.add_parser("connection", help="MCP 연결 계정과 Drive 파일 권한 조회 (전사하지 않음)")
     remote.add_argument("server", help="ScribeFlow의 HTTPS /mcp 주소")
@@ -84,8 +84,9 @@ def main(argv: list[str] | None = None) -> int:
     command.add_argument("--format", choices=("txt", "md"), default="txt", help="저장 형식 (기본 txt)")
     command.add_argument(
         "--replace-existing", action="store_true",
-        help="원본 SHA-256이 일치하는 기존 TXT를 재전사 결과로 갱신",
+        help="원본 SHA-256이 일치하는 기존 전사문을 재전사 결과로 갱신",
     )
+    command.add_argument("--transcript-file-id", help="재전사로 교체할 기존 Drive 전사문 ID (이동된 파일 포함)")
     command.add_argument(
         "--chunk-seconds", type=int, default=None,
         help="구간 길이(초). 미지정 시 음질을 유지하며 25MB 한도 내 최대한 길게",
@@ -161,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
                 language=args.language,
                 keywords=tuple(args.keyword), prompt=args.prompt,
                 replace_existing=args.replace_existing, output_format=args.format,
+                transcript_file_id=args.transcript_file_id,
             )
             if args.json:
                 print(json.dumps(result, ensure_ascii=False))

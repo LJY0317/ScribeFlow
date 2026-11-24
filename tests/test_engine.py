@@ -160,7 +160,7 @@ class LosslessAudioTests(unittest.TestCase):
                     with patch("scribeflow.engine.CHUNK_TARGET_BYTES", 70_000):
                         with patch("scribeflow.engine.get_api_key", return_value="test"):
                             with patch("openai.OpenAI", return_value=self.fake_client(captured)):
-                                transcribe_file(source, root / "output")
+                                transcribe_file(source, root / "output", retain_chunks=(suffix == ".mp3"))
                 self.assertGreater(len(captured), 1)
                 self.assertEqual(source.read_bytes(), original)
                 self.assertTrue(all(ext == suffix for ext, _ in captured))

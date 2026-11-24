@@ -9,10 +9,12 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from urllib.error import HTTPError
 
-from .cloud_run import normalize_language, normalize_transcription_context
-from .linked_drive import DriveCredential, check_file
-from .pipeline import transcribe
+from .cloud_run import normalize_language, normalize_output_format, normalize_transcription_context
+from .drive_transcription import DriveTranscriptionError, transcribe_drive
+from .linked_drive import DriveCredential
+from .pipeline import NoSpeechDetectedError, transcribe
 
 
 def run_job() -> dict:
@@ -27,7 +29,7 @@ def run_job() -> dict:
     language = normalize_language(os.environ.get("SCRIBEFLOW_LANGUAGE", "auto"))
     replace_existing = os.environ.get("SCRIBEFLOW_REPLACE_EXISTING") == "true"
     transcript_file_id = os.environ.get("SCRIBEFLOW_TRANSCRIPT_FILE_ID", "").strip()
-    output_format = os.environ.get("SCRIBEFLOW_OUTPUT_FORMAT", "txt")
+    output_format = normalize_output_format(os.environ.get("SCRIBEFLOW_OUTPUT_FORMAT", "txt"))
 
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,}", file_id):
         raise ValueError("SCRIBEFLOW_SOURCE_FILE_ID must be a Google Drive file ID")
@@ -40,31 +42,28 @@ def run_job() -> dict:
     # Supply a writable private copy for this job; it is removed on completion.
     with tempfile.TemporaryDirectory(prefix="scribeflow-cloud-") as directory:
         private = Path(directory)
-        config = private / "rclone.conf"
-        scope = {}
-        if envelope:
-            credential = DriveCredential.open(envelope, file_id)
-            record = check_file(credential, file_id)
-            if not record["can_download"] or (not replace_existing and not record["can_save_transcript"]):
-                raise PermissionError("The connected account lost access to the audio or its output folder")
-            config.touch(mode=0o600)
-            config.write_text(credential.rclone_config(record["drive_id"]), encoding="utf-8")
-            scope = {"SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID": record["parent_id"]}
-        else:
+        scope = {"SCRIBEFLOW_CACHE_DIR": str(private / "cache")}
+        if not envelope:
+            config = private / "rclone.conf"
             shutil.copyfile(config_secret, config)
             config.chmod(0o600)
-        scope.update(RCLONE_CONFIG=str(config), SCRIBEFLOW_CACHE_DIR=str(private / "cache"))
-        if envelope:
-            scope["RCLONE_DRIVE_SHARED_WITH_ME"] = "false"
+            scope["RCLONE_CONFIG"] = str(config)
         previous = {name: os.environ.get(name) for name in scope}
         try:
             os.environ.update(scope)
+            if envelope:
+                return transcribe_drive(
+                    DriveCredential.open(envelope, file_id), file_id, private,
+                    keywords=keywords, prompt=prompt, language=language,
+                    replace_existing=replace_existing, transcript_file_id=transcript_file_id,
+                    output_format=output_format,
+                )
             options = {"transcript_file_id": transcript_file_id} if transcript_file_id else {}
             if output_format != "txt":
                 options["output_format"] = output_format
             return transcribe(
                 file_id, keywords=keywords, prompt=prompt, language=language,
-                replace_existing=replace_existing, **options,
+                replace_existing=replace_existing, retain_chunks=False, **options,
             )
         finally:
             for name, value in previous.items():
@@ -74,18 +73,64 @@ def run_job() -> dict:
                     os.environ[name] = value
 
 
+def _result_summary(result: dict) -> dict:
+    summary = {"result": result.get("status") or "unknown",
+               "output_format": result.get("output_format") or os.environ.get("SCRIBEFLOW_OUTPUT_FORMAT", "txt")}
+    for field in ("model", "error_code"):
+        if result.get(field):
+            summary[field] = result[field]
+    file_id = result.get("transcript_file_id")
+    if not file_id and result.get("url"):
+        match = re.fullmatch(r"https://drive\.google\.com/file/d/([A-Za-z0-9_-]{10,})/view", result["url"])
+        file_id = match.group(1) if match else None
+    if result.get("ok") and file_id and re.fullmatch(r"[A-Za-z0-9_-]{10,}", file_id):
+        summary.update(transcript_file_id=file_id, transcript_url=f"https://drive.google.com/file/d/{file_id}/view")
+    return summary
+
+
+def _publish_result(summary: dict) -> None:
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    region = os.environ.get("SCRIBEFLOW_REGION")
+    job = os.environ.get("CLOUD_RUN_JOB")
+    execution = os.environ.get("CLOUD_RUN_EXECUTION")
+    if not all((project, region, job, execution)):
+        return  # Local/manual invocation has no Cloud Run execution resource.
+    from google.auth import default
+    from google.auth.transport.requests import AuthorizedSession
+    from .cloud_dedup import FirestoreJobClaims
+
+    credentials, _ = default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    resource = f"projects/{project}/locations/{region}/jobs/{job}/executions/{execution}"
+    with AuthorizedSession(credentials) as session:
+        FirestoreJobClaims(project, session).write_result(
+            resource, os.environ.get("SCRIBEFLOW_REQUEST_OWNER", ""), summary,
+        )
+
+
 def main() -> int:
     try:
         result = run_job()
     except Exception as exc:
-        # Do not leak OAuth refresh tokens, API keys, or raw rclone errors to logs.
-        print(json.dumps({"ok": False, "error_type": type(exc).__name__}), file=sys.stderr)
-        return 1
-    print(json.dumps({
-        "ok": bool(result.get("ok")),
-        "status": result.get("status"),
-        "transcript_url": result.get("url"),
-    }, ensure_ascii=False))
+        # Return stable error codes, never raw exception messages or credentials.
+        if isinstance(exc, DriveTranscriptionError):
+            code = exc.code
+        elif isinstance(exc, NoSpeechDetectedError):
+            code = "no_speech"
+        elif isinstance(exc, PermissionError):
+            code = "permission_denied"
+        elif isinstance(exc, HTTPError):
+            code = f"drive_http_{exc.code}"
+        else:
+            code = type(exc).__name__
+        result = {"ok": False, "status": "failed", "error_code": code}
+    summary = _result_summary(result)
+    try:
+        _publish_result(summary)
+    except Exception as exc:
+        # A failed receipt write must not turn a published transcript into a failed job.
+        print(json.dumps({"result_record_error": type(exc).__name__}), file=sys.stderr)
+    print(json.dumps({"ok": bool(result.get("ok")), "status": summary["result"],
+                      "error_code": summary.get("error_code")}, ensure_ascii=False))
     return 0 if result.get("ok") else 1
 
 

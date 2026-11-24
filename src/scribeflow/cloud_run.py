@@ -105,6 +105,7 @@ class CloudRunJobs:
         prompt: str = "", language: str = "auto", *, replace_existing: bool = False, drive_envelope: str = "",
         transcript_file_id: str = "",
         output_format: str = "txt",
+        owner: str = "",
     ) -> dict:
         """Queue one job with optional vocabulary/context; no audio in gateway."""
         if not _FILE_ID.fullmatch(file_id):
@@ -128,13 +129,15 @@ class CloudRunJobs:
             variables.append({"name": "SCRIBEFLOW_REPLACE_EXISTING", "value": "true"})
         if transcript_file_id:
             if not replace_existing or not _FILE_ID.fullmatch(transcript_file_id):
-                raise ValueError("A valid replacement TXT ID requires replacement mode")
+                raise ValueError("A valid replacement transcript ID requires replacement mode")
             variables.append({"name": "SCRIBEFLOW_TRANSCRIPT_FILE_ID", "value": transcript_file_id})
         overrides = {"containerOverrides": [{"env": variables}], "taskCount": 1}
         if drive_envelope:
             from .linked_drive import JOB_TIMEOUT_SECONDS
 
             variables.append({"name": "SCRIBEFLOW_LINKED_DRIVE_ENVELOPE", "value": drive_envelope})
+            if owner:
+                variables.append({"name": "SCRIBEFLOW_REQUEST_OWNER", "value": owner})
             overrides["timeout"] = f"{JOB_TIMEOUT_SECONDS}s"
         operation = self._call("POST", self.target.resource + ":run", payload={"overrides": overrides})
         name = operation.get("name", "")
@@ -155,7 +158,11 @@ class CloudRunJobs:
         if not operation.get("done"):
             return {"status": "running", "operation": operation_name}
         if operation.get("error"):
-            return {"status": "failed", "operation": operation_name}
+            result = {"status": "failed", "operation": operation_name}
+            execution_name = operation.get("metadata", {}).get("name", "")
+            if execution_name.startswith(target.resource + "/executions/"):
+                result["execution"] = execution_name
+            return result
         execution_name = operation.get("response", {}).get("name", "")
         if not execution_name.startswith(target.resource + "/executions/"):
             raise RuntimeError("Unexpected Cloud Run execution name")
@@ -166,7 +173,7 @@ class CloudRunJobs:
             state = "completed"
         else:
             state = "running"
-        result = {"status": state, "operation": operation_name}
+        result = {"status": state, "operation": operation_name, "execution": execution_name}
         # Console logs require the user's normal Google Cloud permissions.
         if execution.get("logUri"):
             result["logs_url"] = execution["logUri"]

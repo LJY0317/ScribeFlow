@@ -21,23 +21,24 @@ class FakeClaims:
     def __init__(self):
         self.lock = threading.Lock()
         self.documents = {}
+        self.results = {}
         self.revision = 0
         self.sweep_expired = Mock()
 
     def _snapshot(self, value):
         return copy.deepcopy(value)
 
-    def _new(self, now, owner):
+    def _new(self, now, owner, output_format):
         self.revision += 1
-        result = _starting_document(now, owner)
+        result = _starting_document(now, owner, output_format)
         result["updateTime"] = str(self.revision)
         return result
 
-    def create(self, key, now, *, owner=""):
+    def create(self, key, now, *, owner="", output_format="txt"):
         with self.lock:
             if key in self.documents:
                 return None
-            self.documents[key] = self._new(now, owner)
+            self.documents[key] = self._new(now, owner, output_format)
             return self._snapshot(self.documents[key])
 
     def read(self, key):
@@ -45,12 +46,12 @@ class FakeClaims:
             value = self.documents.get(key)
             return self._snapshot(value) if value else None
 
-    def reset(self, key, previous, now, *, owner=""):
+    def reset(self, key, previous, now, *, owner="", output_format="txt"):
         with self.lock:
             current = self.documents.get(key)
             if not current or current["updateTime"] != previous["updateTime"]:
                 return None
-            self.documents[key] = self._new(now, owner)
+            self.documents[key] = self._new(now, owner, output_format)
             return self._snapshot(self.documents[key])
 
     def owns_operation(self, owner, operation):
@@ -69,6 +70,9 @@ class FakeClaims:
             current["fields"]["operation"] = {"stringValue": operation}
             self.revision += 1
             current["updateTime"] = str(self.revision)
+
+    def read_result(self, execution):
+        return self.results.get(execution)
 
 
 FILE_ID = "file_" + "a" * 26
@@ -128,6 +132,29 @@ class DeduplicationTests(unittest.TestCase):
         }
         self.assertEqual(self.jobs.start(FILE_ID)["status"], "already_completed")
         self.backend.start.assert_called_once()
+
+    def test_actual_result_format_and_owner_survive_retranscription(self):
+        self.jobs.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a")
+        self.backend.status.return_value = {"status": "completed", "operation": OPERATION, "execution": "execution-a"}
+        receipt = {"result": "created", "output_format": "txt", "transcript_file_id": "output-id"}
+        self.claims.results["execution-a"] = ("google-a", receipt)
+        duplicate = self.jobs.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a", output_format="md")
+        self.assertEqual(duplicate["requested_output_format"], "md")
+        self.assertEqual(duplicate["output_format"], "txt")
+        self.assertEqual(duplicate["transcript_file_id"], "output-id")
+        self.backend.start.assert_called_once()
+        self.backend.start.return_value = {"status": "submitted", "operation": OPERATION + "-new"}
+        self.jobs.start(FILE_ID, retry=True, replace_existing=True, owner="google-a", drive_envelope="encrypted-a")
+        self.assertEqual(self.jobs.status(OPERATION, owner="google-a")["transcript_file_id"], "output-id")
+        with self.assertRaises(PermissionError):
+            self.jobs.status(OPERATION, owner="google-b")
+
+    def test_missing_result_does_not_change_completed_execution(self):
+        self.jobs.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a")
+        self.backend.status.return_value = {"status": "completed", "operation": OPERATION, "execution": "execution-a"}
+        self.assertEqual(self.jobs.status(OPERATION, owner="google-a"), {
+            "status": "completed", "operation": OPERATION, "result_available": False,
+        })
 
     def test_completed_job_requires_explicit_retry(self):
         self.jobs.start(FILE_ID)
@@ -317,6 +344,17 @@ class FirestoreRestClaimsTests(unittest.TestCase):
         )
         self.assertIn("expires_at", kwargs["json"]["fields"])
         self.assertIn("timestampValue", kwargs["json"]["fields"]["expires_at"])
+
+    def test_result_receipt_uses_existing_collection_and_expiration(self):
+        self.session.request.return_value = self.response(200)
+        receipt = {"result": "created", "transcript_file_id": "output-id", "output_format": "md"}
+        self.claims.write_result("execution-a", "owner-a", receipt)
+        args, kwargs = self.session.request.call_args
+        self.assertTrue(args[1].endswith("/result_" + hashlib.sha256(b"execution-a").hexdigest()))
+        fields = kwargs["json"]["fields"]
+        self.assertIn("expires_at", fields)
+        self.session.request.return_value = self.response(200, {"fields": fields})
+        self.assertEqual(self.claims.read_result("execution-a"), ("owner-a", receipt))
 
     def test_sweep_filters_expired_records_and_deletes_only_queried_versions(self):
         document = {"name": "projects/p/databases/db/documents/scribeflow_job_claims/old",

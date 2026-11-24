@@ -65,9 +65,10 @@ class IntegratedTranscriptionTests(unittest.TestCase):
                             str(audio), keywords=("대인접수",),
                             prompt="보험 통화",
                         )
-                        reused = transcribe(str(audio))
+                        reused = transcribe(str(audio), output_format="md")
             self.assertEqual(created["status"], "created")
             self.assertEqual(reused["status"], "skipped_existing")
+            self.assertEqual(reused["output_format"], "txt")
             self.assertEqual(len(captured), 1)
             self.assertEqual(captured[0]["body"], original)
             self.assertEqual(captured[0]["name"], audio.name)

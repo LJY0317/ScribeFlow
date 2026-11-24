@@ -238,6 +238,7 @@ def render_chunk(
 def prepare_stream_copy_chunks(
     source: Path, duration: float, initial_seconds: int,
     overlap_seconds: int, destination: Path,
+    *, retain_chunks: bool = True,
 ) -> list[Chunk]:
     """Preflight every chunk's actual bytes before making any paid API calls.
 
@@ -261,6 +262,8 @@ def prepare_stream_copy_chunks(
                 if path.stat().st_size > CHUNK_TARGET_BYTES:
                     oversized = True
                     break
+                if not retain_chunks:
+                    path.unlink()
             if not oversized:
                 destination.mkdir(parents=True, exist_ok=True)
                 for path in scratch.iterdir():
@@ -306,7 +309,7 @@ def transcribe_file(
     source: Path, output: Path, chunk_seconds: int | None = None,
     overlap_seconds: int = 3, language: str = "auto",
     keywords: tuple[str, ...] = (), prompt: str = "",
-    *, model: str | None = None,
+    *, model: str | None = None, retain_chunks: bool = True,
 ) -> Path:
     """Transcribe the original file when possible, otherwise stream-copy chunks."""
     model = model if model is not None else configured_model()
@@ -387,7 +390,7 @@ def transcribe_file(
                 stage = Path(directory)
                 chunks = prepare_stream_copy_chunks(
                     source, info["duration_seconds"], seconds,
-                    overlap_seconds, stage,
+                    overlap_seconds, stage, retain_chunks=retain_chunks,
                 )
                 config = {**base_config, "chunks": [chunk.as_dict() for chunk in chunks]}
                 output.mkdir(parents=True, exist_ok=True)
@@ -395,9 +398,8 @@ def transcribe_file(
                     manifest, json.dumps(config, ensure_ascii=False, indent=2)
                 )
                 chunk_dir.mkdir(exist_ok=True)
-                for chunk in chunks:
-                    suffix = f"{chunk.name}{source.suffix.lower()}"
-                    publish_prepared_chunk(stage / suffix, chunk_dir / suffix)
+                for prepared in stage.iterdir():
+                    publish_prepared_chunk(prepared, chunk_dir / prepared.name)
 
     chunk_dir.mkdir(exist_ok=True)
     result_dir.mkdir(exist_ok=True)
@@ -432,7 +434,8 @@ def transcribe_file(
             raise ValueError(f"{chunk.index}번 오디오 구간 크기가 유효하지 않습니다.")
         if client is None:
             from openai import OpenAI
-            client = OpenAI(api_key=api_key)
+            # An ambiguous upload/response must not silently start another paid request.
+            client = OpenAI(api_key=api_key, max_retries=0)
         print(
             f"[{chunk.index}/{len(chunks)}] "
             f"{clock(chunk.start)}~{clock(chunk.end)} 전사 요청",

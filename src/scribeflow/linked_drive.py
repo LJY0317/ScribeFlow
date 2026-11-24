@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import time
+import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -48,16 +50,6 @@ class DriveCredential:
         if bound_file != file_id or expires_at - time.time() < JOB_TIMEOUT_SECONDS + 60:
             raise PermissionError("The job's Google Drive authorization is invalid or expires too soon")
         return cls(token, expires_at)
-
-    def rclone_config(self, drive_id: str | None) -> str:
-        expiry = datetime.fromtimestamp(self.expires_at, timezone.utc).isoformat()
-        token = json.dumps({"access_token": self.access_token, "token_type": "Bearer", "expiry": expiry})
-        config = f"[gdrive]\ntype = drive\nscope = drive\ntoken = {token}\n"
-        if drive_id:
-            if not _DRIVE_ID.fullmatch(drive_id):
-                raise ValueError("Invalid shared drive ID")
-            config += f"team_drive = {drive_id}\n"
-        return config
 
 
 def _read(credential: DriveCredential, resource: str, **params) -> dict:
@@ -134,7 +126,7 @@ def check_file(credential: DriveCredential, file_id: str) -> dict:
         except PermissionError:
             pass
     return {
-        "id": file["id"], "name": file["name"], "parent_id": parent.get("id"),
+        "id": file["id"], "name": file["name"], "parent_id": parents[0] if len(parents) == 1 else None,
         "drive_id": file.get("driveId"),
         "can_download": bool(file.get("capabilities", {}).get("canDownload")),
         "can_save_transcript": (
@@ -142,3 +134,65 @@ def check_file(credential: DriveCredential, file_id: str) -> dict:
             and bool(parent.get("capabilities", {}).get("canAddChildren"))
         ),
     }
+
+
+def can_add_to_folder(credential: DriveCredential, parent_id: str) -> bool:
+    parent = _metadata(credential, parent_id, "mimeType,trashed,capabilities(canAddChildren)")
+    return (parent.get("mimeType") == _FOLDER and not parent.get("trashed")
+            and bool(parent.get("capabilities", {}).get("canAddChildren")))
+
+
+FILE_FIELDS = "id,name,mimeType,parents,driveId,trashed,size,sha256Checksum,version,capabilities(canDownload,canEdit,canModifyContent)"
+
+
+def file_metadata(credential: DriveCredential, file_id: str) -> dict:
+    return _metadata(credential, file_id, FILE_FIELDS)
+
+
+def sibling_transcripts(credential: DriveCredential, source: dict, names: tuple[str, ...]) -> list[dict]:
+    """List only named siblings, including duplicates, using the actual parent ID."""
+    parents = source.get("parents") or []
+    if len(parents) != 1:
+        return []
+    query = "trashed = false and " + _quote_query(parents[0]) + " in parents and (" + " or ".join(
+        "name = " + _quote_query(name) for name in names
+    ) + ")"
+    params = {"q": query, "fields": f"nextPageToken,incompleteSearch,files({FILE_FIELDS})",
+              "pageSize": 100, "supportsAllDrives": "true", "includeItemsFromAllDrives": "true",
+              "corpora": "user"}
+    if source.get("driveId"):
+        params.update(corpora="drive", driveId=source["driveId"])
+    entries = []
+    while True:
+        response = _read(credential, "files", **params)
+        if response.get("incompleteSearch"):
+            raise RuntimeError("Drive sibling search is incomplete")
+        entries.extend(response.get("files", []))
+        if not response.get("nextPageToken"):
+            return entries
+        params["pageToken"] = response["nextPageToken"]
+
+
+def download_file(credential: DriveCredential, file_id: str, destination: Path) -> None:
+    """Stream the selected binary by ID; never resolve it through its name."""
+    if not _DRIVE_ID.fullmatch(file_id):
+        raise ValueError("Invalid Drive file ID")
+    request = Request(_API + "files/" + file_id + "?alt=media&supportsAllDrives=true",
+                      headers={"Authorization": "Bearer " + credential.access_token})
+    with urlopen(request, timeout=60) as reply, destination.open("wb") as output:
+        shutil.copyfileobj(reply, output, length=1024 * 1024)
+
+
+def create_transcript(credential: DriveCredential, parent_id: str, name: str, data: bytes, mime_type: str) -> dict:
+    """Publish the small final text with metadata and get the actual new file ID."""
+    boundary = uuid.uuid4().hex
+    metadata = json.dumps({"name": name, "parents": [parent_id], "mimeType": mime_type}, ensure_ascii=False).encode()
+    body = (f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode() + metadata
+            + f"\r\n--{boundary}\r\nContent-Type: {mime_type}\r\n\r\n".encode() + data
+            + f"\r\n--{boundary}--\r\n".encode())
+    request = Request("https://www.googleapis.com/upload/drive/v3/files?" + urlencode({
+        "uploadType": "multipart", "supportsAllDrives": "true", "fields": "id,sha256Checksum",
+    }), headers={"Authorization": "Bearer " + credential.access_token,
+                 "Content-Type": f"multipart/related; boundary={boundary}"}, method="POST", data=body)
+    with urlopen(request, timeout=60) as reply:
+        return json.load(reply)

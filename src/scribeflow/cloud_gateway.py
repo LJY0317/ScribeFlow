@@ -183,8 +183,8 @@ def create_server():
                 raise ValueError("A valid Google Drive file ID is required")
             credential = linked_credential(token)
             file = check_file(credential, file_id)
-            if not file["can_download"] or (not replace_existing and not file["can_save_transcript"]):
-                raise PermissionError("The connected account must be able to read the audio and, for new transcriptions, save the output file")
+            if not file["can_download"]:
+                raise PermissionError("The connected account must be able to read the audio")
             if os.path.splitext(file["name"])[1].lower() not in SUPPORTED_AUDIO_SUFFIXES:
                 raise ValueError("Select a supported audio file")
             options.update(owner=str(token.claims["sub"]), drive_envelope=credential.seal(file_id))
@@ -202,6 +202,7 @@ def create_server():
             "language defaults to automatic detection ('auto'); use 'ko', 'en', "
             "or another supported code to hint a known language. "
             "output_format selects one output file: 'txt' (default, plain text) or 'md' (Markdown). "
+            "Existing matching adjacent TXT or Markdown transcripts are reused without another OpenAI request. "
             "Existing transcripts are not overwritten. Repeated requests for "
             "the same file reuse the existing job. Explicit retry=True "
             "is required to repeat a completed/failed job or stale submission; "
@@ -238,7 +239,7 @@ def create_server():
         )
 
     @server.tool(
-        description="Check a submitted transcription without restarting it.",
+        description="Check a submitted transcription without restarting it. Terminal results include the actual output format, Drive file ID and URL when available, or a safe failure code.",
         annotations=ToolAnnotations(readOnlyHint=True),
     )
     def get_transcription_status(operation: str) -> dict:

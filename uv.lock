@@ -2504,7 +2504,7 @@ wheels = [
 
 [[package]]
 name = "scribeflow"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "filelock" },
@@ -2522,10 +2522,10 @@ cloud = [
 [package.metadata]
 requires-dist = [
     { name = "fastmcp", marker = "extra == 'cloud'", specifier = ">=4.1.7,<5" },
-    { name = "filelock", specifier = ">=3.20,<4" },
+    { name = "filelock", specifier = ">=3.32.7,<4" },
     { name = "google-auth", extras = ["requests"], marker = "extra == 'cloud'", specifier = ">=2.40,<3" },
     { name = "keyring", marker = "sys_platform == 'darwin'", specifier = ">=25.0,<27" },
-    { name = "openai", specifier = ">=2.0,<4" },
+    { name = "openai", specifier = ">=3.49.0,<4" },
     { name = "py-key-value-aio", extras = ["firestore", "wrappers-encryption"], marker = "extra == 'cloud'", specifier = ">=0.4.6,<0.5" },
 ]
 provides-extras = ["cloud"]

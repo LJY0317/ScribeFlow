@@ -37,6 +37,9 @@ jobs:
           bash -n scripts/deploy-worker-only.sh
           bash -n scripts/audit-cloud-storage.sh
           bash -n scripts/preflight-cloud-run.sh
+          bash -n scripts/deploy-cloud-run.sh
+          bash -n scripts/enable-mcp-access.sh
+          bash -n scripts/uninstall-cloud-run.sh
       - name: Validate conservative Artifact Registry policy template
         run: |
           python - <<'PY'
@@ -50,7 +53,7 @@ jobs:
           assert keep["mostRecentVersions"]["keepCount"] >= 5
           PY
       - name: Run tests
-        run: uv run --extra cloud --python 3.11 python -m unittest discover -s tests -q
+        run: uv run --locked --extra cloud --python 3.11 python -m unittest discover -s tests -q
       - name: Build distribution
         run: uv build
   image:

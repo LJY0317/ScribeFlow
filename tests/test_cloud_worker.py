@@ -36,6 +36,7 @@ class CloudWorkerTests(unittest.TestCase):
                     self.assertEqual(file_id, "audio_" + "a" * 25)
                     self.assertEqual(kwargs, {
                         "keywords": (), "prompt": "", "language": "auto", "replace_existing": False,
+                        "retain_chunks": False,
                     })
                     config = Path(os.environ["RCLONE_CONFIG"])
                     self.assertTrue(config.exists())
@@ -64,7 +65,7 @@ class CloudWorkerTests(unittest.TestCase):
                     self.assertTrue(run_job()["ok"])
                 transcribe.assert_called_once_with(
                     "audio_" + "a" * 25, keywords=(), prompt="", language="auto",
-                    replace_existing=False,
+                    replace_existing=False, retain_chunks=False,
                 )
 
     def test_context_from_job_environment_reaches_transcription(self):
@@ -89,7 +90,7 @@ class CloudWorkerTests(unittest.TestCase):
                         keywords=("Kubernetes", "OAuth"),
                         prompt="Technical discussion",
                         language="en",
-                        replace_existing=True,
+                        replace_existing=True, retain_chunks=False,
                     )
 
     def test_external_transcript_id_reaches_worker(self):
@@ -123,10 +124,7 @@ class CloudWorkerTests(unittest.TestCase):
             "OPENAI_API_KEY": "fake",
         }), patch("scribeflow.cloud_worker.DriveCredential.open", return_value=SimpleNamespace(
             rclone_config=lambda _: "[gdrive]\ntype = drive\n",
-        )), patch("scribeflow.cloud_worker.check_file", return_value={
-            "can_download": True, "can_save_transcript": False,
-            "parent_id": "parent_id_1234567890123456", "drive_id": None,
-        }), patch("scribeflow.cloud_worker.transcribe", return_value={"ok": True}) as call:
+        )), patch("scribeflow.cloud_worker.transcribe_drive", return_value={"ok": True}) as call:
             self.assertTrue(run_job()["ok"])
             self.assertEqual(call.call_args.kwargs["output_format"], "md")
             self.assertTrue(call.call_args.kwargs["replace_existing"])
@@ -143,9 +141,17 @@ class CloudWorkerTests(unittest.TestCase):
 
     def test_job_error_does_not_log_secret(self):
         with patch("scribeflow.cloud_worker.run_job", side_effect=RuntimeError("API KEY SECRET")):
-            with patch("sys.stderr") as stream:
+            with patch("sys.stdout") as stream:
                 self.assertEqual(main(), 1)
             self.assertNotIn("API KEY SECRET", "".join(str(c) for c in stream.write.call_args_list))
+
+    def test_result_record_failure_does_not_invalidate_saved_transcript(self):
+        file_id = "text_" + "a" * 25
+        with patch("scribeflow.cloud_worker.run_job", return_value={"ok": True, "status": "created", "output_format": "md", "transcript_file_id": file_id}), \
+             patch("scribeflow.cloud_worker._publish_result", side_effect=RuntimeError("private error")) as publish, \
+             patch("sys.stdout"), patch("sys.stderr"):
+            self.assertEqual(main(), 0)
+        self.assertEqual(publish.call_args.args[0]["transcript_file_id"], file_id)
 
 
 if __name__ == "__main__":

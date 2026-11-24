@@ -97,8 +97,8 @@ def clean_cache(root: Path) -> dict:
             if (path.is_dir() and path.name.startswith("download-")
                     and now - path.stat().st_mtime > MAX_AGE_SECONDS):
                 shutil.rmtree(path)
-    # Lock records contain no audio. Retire abandoned ones so the number of
-    # distinct files processed does not grow this directory indefinitely.
+    # Retire abandoned locks without letting a concurrent caller acquire a
+    # live lock and then have its inode unlinked by the cleaner.
     locks = root / "locks"
     if locks.is_dir():
         for path in locks.iterdir():
@@ -112,6 +112,11 @@ def clean_cache(root: Path) -> dict:
             except Timeout:
                 continue
             else:
-                lock.release()
-                path.unlink(missing_ok=True)
+                try:
+                    # POSIX filelock rejects unlinked inodes on acquisition.
+                    # WindowsFileLock manages its own lock-file removal.
+                    if os.name != "nt":
+                        path.unlink(missing_ok=True)
+                finally:
+                    lock.release()
     return {"removed_jobs": removed, **cache_stats(root)}

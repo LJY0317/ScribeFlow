@@ -82,12 +82,17 @@ done
 
 gcloud firestore databases describe --database=scribeflow-oauth \
   --project="$GCP_PROJECT" >/dev/null
-for secret in "$OPENAI_SECRET" "$RCLONE_SECRET" \
-  scribeflow-google-client-secret scribeflow-oauth-seed; do
+secrets=("$OPENAI_SECRET" scribeflow-google-client-secret scribeflow-oauth-seed)
+if [[ "${SCRIBEFLOW_LINKED_DRIVE:-0}" == 1 ]]; then
+  secrets+=(scribeflow-drive-job-key)
+else
+  secrets+=("$RCLONE_SECRET")
+fi
+for secret in "${secrets[@]}"; do
   gcloud secrets versions describe latest --secret="$secret" \
     --project="$GCP_PROJECT" >/dev/null
 done
-echo "Existing Firestore database and four secrets verified."
+echo "Existing Firestore database and required secrets verified."
 
 echo "Recent transcription executions (review running jobs before deploying):"
 gcloud run jobs executions list --job="$JOB" --limit=5 \

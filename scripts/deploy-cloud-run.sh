@@ -37,8 +37,13 @@ URL="https://${SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
 gcloud config set project "$GCP_PROJECT"
 gcloud services enable run.googleapis.com secretmanager.googleapis.com \
   firestore.googleapis.com --project "$GCP_PROJECT"
+if [[ "$LINKED_DRIVE" == 1 ]]; then
+  gcloud services enable drive.googleapis.com --project "$GCP_PROJECT"
+fi
 
-for name in "$OPENAI_SECRET" "$RCLONE_SECRET" "$GOOGLE_SECRET"; do
+required_secrets=("$OPENAI_SECRET" "$GOOGLE_SECRET")
+if [[ "$LINKED_DRIVE" != 1 ]]; then required_secrets+=("$RCLONE_SECRET"); fi
+for name in "${required_secrets[@]}"; do
   gcloud secrets versions describe latest --secret="$name" --project="$GCP_PROJECT" >/dev/null
 done
 
@@ -61,7 +66,9 @@ for name in scribeflow-worker scribeflow-gateway; do
     gcloud iam service-accounts create "$name" --project "$GCP_PROJECT"
 done
 
-for name in "$OPENAI_SECRET" "$RCLONE_SECRET"; do
+worker_secret_names=("$OPENAI_SECRET")
+if [[ "$LINKED_DRIVE" != 1 ]]; then worker_secret_names+=("$RCLONE_SECRET"); fi
+for name in "${worker_secret_names[@]}"; do
   gcloud secrets add-iam-policy-binding "$name" --project "$GCP_PROJECT" \
     --member="serviceAccount:$WORKER_SA" \
     --role=roles/secretmanager.secretAccessor >/dev/null
@@ -79,9 +86,12 @@ if ! gcloud firestore databases describe --database=scribeflow-oauth \
     --location="$REGION" --type=firestore-native --project="$GCP_PROJECT"
 fi
 gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
-  --member="serviceAccount:$GATEWAY_SA" --role=roles/datastore.user >/dev/null
+  --member="serviceAccount:$GATEWAY_SA" --role=roles/datastore.user --condition=None >/dev/null
+gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
+  --member="serviceAccount:$WORKER_SA" --role=roles/datastore.user \
+  --condition="expression=resource.name==\"projects/${GCP_PROJECT}/databases/scribeflow-oauth\",title=scribeflow-worker-results" >/dev/null
 
-worker_secrets="/secrets/rclone.conf=${RCLONE_SECRET}:latest,OPENAI_API_KEY=${OPENAI_SECRET}:latest"
+worker_secrets="OPENAI_API_KEY=${OPENAI_SECRET}:latest"
 gateway_secrets="SCRIBEFLOW_GOOGLE_CLIENT_SECRET=${GOOGLE_SECRET}:latest,SCRIBEFLOW_OAUTH_SEED=${SEED_SECRET}:latest"
 if [[ "$LINKED_DRIVE" == 1 ]]; then
   for account in "$WORKER_SA" "$GATEWAY_SA"; do
@@ -90,9 +100,12 @@ if [[ "$LINKED_DRIVE" == 1 ]]; then
   done
   worker_secrets+=",SCRIBEFLOW_DRIVE_JOB_KEY=${DRIVE_JOB_SECRET}:latest"
   gateway_secrets+=",SCRIBEFLOW_DRIVE_JOB_KEY=${DRIVE_JOB_SECRET}:latest"
+else
+  worker_secrets+=",/secrets/rclone.conf=${RCLONE_SECRET}:latest"
 fi
 
-worker_env="SCRIBEFLOW_CLOUD_MODE=worker,SCRIBEFLOW_RCLONE_CONFIG_SECRET=/secrets/rclone.conf,SCRIBEFLOW_TRANSCRIPTION_MODEL=${SCRIBEFLOW_TRANSCRIPTION_MODEL:-gpt-transcribe}"
+worker_env="SCRIBEFLOW_CLOUD_MODE=worker,GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},SCRIBEFLOW_REGION=${WORKER_REGION},SCRIBEFLOW_TRANSCRIPTION_MODEL=${SCRIBEFLOW_TRANSCRIPTION_MODEL:-gpt-transcribe}"
+if [[ "$LINKED_DRIVE" != 1 ]]; then worker_env+=",SCRIBEFLOW_RCLONE_CONFIG_SECRET=/secrets/rclone.conf"; fi
 if [[ -n "${OPENAI_BASE_URL:-}" ]]; then
   worker_env+=",OPENAI_BASE_URL=${OPENAI_BASE_URL}"
 fi
@@ -107,7 +120,7 @@ gcloud run jobs add-iam-policy-binding "$JOB" --project "$GCP_PROJECT" \
   --region "$WORKER_REGION" --member="serviceAccount:$GATEWAY_SA" \
   --role=roles/run.jobsExecutorWithOverrides >/dev/null
 gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
-  --member="serviceAccount:$GATEWAY_SA" --role=roles/run.viewer >/dev/null
+  --member="serviceAccount:$GATEWAY_SA" --role=roles/run.viewer --condition=None >/dev/null
 
 # Never leave a previous, unprotected revision publicly invokable.
 gcloud run services remove-iam-policy-binding "$SERVICE" --project "$GCP_PROJECT" \
