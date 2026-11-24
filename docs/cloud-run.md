@@ -21,25 +21,11 @@ cd ~/ScribeFlow
 
 이미 저장소가 있다면 `git clone` 대신 `cd ~/ScribeFlow && git pull --ff-only`를 사용합니다. Cloud Shell은 오래 사용하지 않으면 종료되지만, **배포된 Cloud Run 서비스와 별개**입니다. 관리자에게 Google Cloud 프로젝트 리소스·IAM 변경 권한이 필요합니다.
 
-## 2. Google Drive 인증 방식 선택
+## 2. Google Drive 접근
 
-연결 계정별 Drive 접근을 사용할 경우 `export SCRIBEFLOW_LINKED_DRIVE=1`을 설정하고 이 절의 rclone 등록은 건너뛰세요. Worker는 연결된 Google 계정의 단기 권한으로 Drive API를 직접 사용합니다. 기본 운영자 전용 rclone 모드에서만 아래 설정이 필요합니다.
+원격 MCP는 사용자가 ChatGPT에서 연결한 Google 계정의 OAuth 권한으로 Drive API에 직접 접근합니다. 별도 rclone 설치·인증 파일·고정 Drive 계정 설정은 필요 없습니다. 배포 스크립트가 Google Drive API를 활성화하며, Google Auth Platform의 데이터 액세스에서 `https://www.googleapis.com/auth/drive` 범위를 설정합니다. 원본 다운로드와 최종 전사문 저장·갱신에는 해당 계정의 실제 Drive 권한이 필요합니다.
 
-관리용 컴퓨터에서 [rclone](https://rclone.org/drive/)을 설치한 뒤 `rclone config`로 Google Drive 연결을 만들고 원격 이름을 **`gdrive`**로 지정합니다. 이 단계는 관리자가 처음 한 번만 수행합니다. 다른 ChatGPT 기기에는 rclone이 필요 없습니다. 기존 `gdrive:` 연결이 있으면 그대로 사용할 수 있습니다.
-
-`rclone config file`로 `rclone.conf`의 위치를 확인합니다. 인증 갱신 토큰이 포함되므로 **GitHub·채팅·로그에 업로드하지 마세요.** 여러 계정의 인증을 함께 담았다면 ScribeFlow용 `gdrive` 설정만 담은 별도 구성 파일을 사용하는 것이 좋습니다.
-
-Cloud Shell의 **파일 업로드** 메뉴로 `rclone.conf`를 Cloud Shell 홈 디렉터리에 올린 뒤 아래처럼 Secret Manager에 저장합니다. 완료 후 **Cloud Shell의 일회용 복사본만** 지웁니다. 로컬의 공용 rclone 설정은 유지합니다.
-
-```bash
-gcloud secrets create scribeflow-rclone-config \
-  --replication-policy=automatic --data-file="$HOME/rclone.conf" \
-  --project="$GCP_PROJECT"
-rm -f "$HOME/rclone.conf"
-export SCRIBEFLOW_RCLONE_SECRET='scribeflow-rclone-config'
-```
-
-이미 Drive 인증이 다른 이름으로 Secret Manager에 저장되어 있다면 새로 만들 필요 없이 `SCRIBEFLOW_RCLONE_SECRET`에 **그 기존 이름**을 지정합니다.
+로컬 CLI에서 직접 Drive 파일을 처리하려는 경우에만 [README의 rclone 연결 방법](../README.md)을 이용하세요.
 
 ## 3. OpenAI API 키 등록
 
@@ -81,11 +67,11 @@ printf '%s' "$GOOGLE_CLIENT_SECRET" | gcloud secrets create scribeflow-google-cl
 unset GOOGLE_CLIENT_SECRET
 ```
 
-Google 로그인에는 신원 확인과 계정 표시를 위해 `openid`, `userinfo.email`, `userinfo.profile`을 요청합니다. 기본 단일 계정의 **Google Drive 파일 접근은 별도 rclone 설정**으로 처리합니다. 로그인 이메일을 바꾸려면 Cloud Run의 `SCRIBEFLOW_GOOGLE_EMAIL` 설정과 Google OAuth 테스트 사용자 설정을 함께 변경하고 재인증해야 합니다.
+Google 로그인에는 신원 확인과 Drive 접근을 위해 `openid`, `userinfo.email`, `userinfo.profile`, 전체 Drive 범위를 요청합니다. 기본값은 한 명의 허용 계정이며, 필요한 경우에만 추가 이메일을 설정합니다. 로그인 이메일을 바꾸려면 Cloud Run의 `SCRIBEFLOW_GOOGLE_EMAIL` 설정과 Google OAuth 테스트 사용자 설정을 함께 변경하고 재인증해야 합니다.
 
 ## 5. Cloud Run 배포 · ChatGPT 연결
 
-**같은 Cloud Shell 세션**에서 프로젝트·OpenAI Secret·Google OAuth Client ID·허용 이메일을 설정하고 실행합니다. rclone 모드에서만 `SCRIBEFLOW_RCLONE_SECRET`이 필요합니다. 연결 계정 모드에서는 Drive API도 활성화하세요(`gcloud services enable drive.googleapis.com --project="$GCP_PROJECT"`).
+**같은 Cloud Shell 세션**에서 프로젝트·OpenAI Secret·Google OAuth Client ID·허용 이메일을 설정하고 실행합니다. 배포 스크립트는 Drive API를 활성화하고 작업 암호화 키를 기존 Secret Manager에 생성하거나 재사용합니다.
 
 ```bash
 cd ~/ScribeFlow
@@ -107,16 +93,15 @@ ChatGPT의 **Plugins → 사용자 지정 MCP 서버 추가**(UI 명칭은 변�
 
 ChatGPT의 접근 허용(Allow Access)을 승인하고 **4단계의 Google 계정으로 로그인**합니다. 다른 PC·Mac에서도 **같은 ChatGPT 계정 및 워크스페이스**라면 로컬 설치는 필요 없습니다. 다만 ChatGPT 앱·플러그인 제공 상태 및 OAuth 토큰 만료에 따라 앱 선택 또는 재인증이 필요할 수 있습니다.
 
-### 연결 계정별 Google Drive 접근
+### 추가 계정 (선택)
 
-기본 설정은 운영자 한 계정과 서버의 `gdrive:` 연결을 사용합니다. 각 로그인 계정의 Drive를 따로 사용하려면 Google Auth Platform에서 Google Drive API와 전체 Drive 범위(`https://www.googleapis.com/auth/drive`)를 설정하고, 필요한 Google 테스트 사용자를 등록합니다. 기존 앱 주소와 OAuth 클라이언트를 유지하고 아래 값을 설정해 5단계의 배포 절차를 수행합니다. 이미 서울·아이오와로 분리된 배포에서는 기존 Worker 리전과 OpenAI 주소도 명시합니다.
+기본 설치는 `SCRIBEFLOW_GOOGLE_EMAIL`의 한 계정만 허용합니다. 여러 계정을 사용하려면 Google OAuth 테스트 사용자를 추가하고 배포 전에 다음 값을 설정합니다.
 
 ```bash
-export SCRIBEFLOW_LINKED_DRIVE=1
 export SCRIBEFLOW_GOOGLE_ADDITIONAL_EMAILS='second@example.com third@example.com'
 ```
 
-추가 이메일은 공백으로 구분합니다. 허용된 계정은 ChatGPT에서 ‘다른 계정 연결’을 선택하고 Google에서 Drive 접근을 승인하면 자기 Drive를 바로 사용할 수 있습니다. 배포는 Cloud Run 작업에 전달하는 단기 Drive 자격 증명을 암호화할 키를 Secret Manager에서 관리합니다. 연결 계정 모드의 새 작업은 해당 Google 계정의 권한만 사용하며 실행 시간은 최대 45분입니다. Google 동의 화면에서 계정마다 Drive 접근을 승인합니다. 기존 연결에는 새 범위에 대한 재연결이 필요합니다. ChatGPT가 이전 도구 목록을 사용하면 플러그인 설정에서 도구 목록을 새로고침합니다. 전환 전 진행 중인 작업은 완료 상태를 확인합니다. 연결 계정 모드에서는 소유자가 기록된 작업만 해당 계정에서 조회할 수 있습니다. [Google Drive 범위](https://developers.google.com/workspace/drive/api/guides/api-specific-auth) · [Google 인증 검증 예외](https://support.google.com/cloud/answer/13464323)
+추가 이메일은 공백으로 구분합니다. 허용된 사용자는 자신의 Google 계정으로 인증하고 해당 계정의 Drive 권한만 사용합니다. Worker에 전달되는 단기 Drive 자격 증명은 암호화되며 작업 시간은 최대 45분입니다. 결과 조회는 해당 작업을 요청한 계정만 할 수 있습니다. [Google Drive 범위](https://developers.google.com/workspace/drive/api/guides/api-specific-auth) · [Google 인증 검증 예외](https://support.google.com/cloud/answer/13464323)
 
 Google Docs·Sheets·Slides 편집 및 파일 형식 변환은 기존 Google Drive 플러그인을 사용합니다. ScribeFlow는 전사와 전사 결과의 파일 ID 전달에 집중합니다.
 
@@ -128,13 +113,13 @@ Google Docs·Sheets·Slides 편집 및 파일 형식 변환은 기존 Google Dri
 
 - `transcribe_audio(file_id, keywords=None, prompt="", retry=False, language="auto", output_format="txt")`: Google Drive 음성 파일 ID **한 개**를 받아 전사 작업을 시작하며 OpenAI API 사용료가 발생합니다. 기본 TXT 외에 `output_format="md"`로 Markdown 한 개를 직접 저장할 수 있습니다. 필요한 경우 `keywords`에 최대 20개의 고유명사·전문용어를, `prompt`에 500자 이내의 짧은 녹음 맥락을 전달할 수 있습니다. 실제 발언을 지어내는 프롬프트를 제공하지 마세요. **동일 파일 ID의 중복 전사 요청**은 Firestore에 원자적으로 예약해 기존 Cloud Run 작업을 재사용합니다. 기존 작업이 완료·실패한 경우 `retry=True`를 명시해야 새 작업을 만들 수 있습니다. 원본과 SHA-256이 일치하는 인접 TXT 또는 MD가 이미 있으면 작업 기록이 만료된 뒤에도 유료 전사를 하지 않고 실제 기존 파일 정보를 반환합니다. 단, 이전 시도가 실행 여부를 확인할 수 없는 상태로 끝난 경우에는 2시간의 안전 유예시간 후에만 명시적 재시도가 가능합니다. 재시도는 API 사용료가 추가로 발생할 수 있으므로 반드시 기존 작업을 먼저 확인하세요.
 - `language` 옵션: 자동 감지(`auto`)가 기본값입니다. 한국어 등 입력 언어를 아는 경우에는 `ko`, `en`과 같은 힌트를 지정할 수 있습니다. 감지 실패 시 추가 재전사나 자동 재인코딩은 수행하지 않습니다. 큰 다중 오디오 트랙은 일부 트랙 유실을 막기 위해 명시적으로 중단합니다.
-- `retranscribe_audio(file_id, keywords=None, prompt="", language="auto", transcript_file_id="", output_format="txt")`: 선택한 녹음을 다시 전사해 기존 전사문을 교체합니다. `output_format="md"`면 Markdown을 대상으로 합니다. 다른 폴더로 이동한 전사문은 `transcript_file_id`에 해당 Drive 파일 ID를 명시할 수 있습니다. 전사문 말꼬리의 원본 SHA-256이 현재 오디오와 일치해야 유료 전사를 시작하며, 기존 파일 ID 및 현재 폴더는 유지됩니다. 생략 시 원본 폴더의 동명 전사문을 우선 확인합니다. 이전 내용은 [Drive 버전 보관 정책](https://developers.google.com/workspace/drive/api/guides/manage-revisions)의 적용을 받습니다. 연결 계정 모드는 현재 연결된 Google 계정으로 직접 갱신하며, 기본 rclone 모드는 `gdrive`의 활성 OAuth 연결이 필요합니다.
-- 원본 폴더에 선택 형식의 동명 전사문이 없으면 Drive에서 이름과 원본 SHA-256이 일치하는 후보 한 개만 갱신합니다. 여러 후보 또는 이름이 바뀐 파일은 `transcript_file_id`로 지정하세요. 연결 계정 모드에서는 원본 폴더에 접근할 수 없어도 원본을 다운로드하고 지정한 전사문을 편집할 수 있으면 재전사 가능합니다.
+- `retranscribe_audio(file_id, keywords=None, prompt="", language="auto", transcript_file_id="", output_format="txt")`: 선택한 녹음을 다시 전사해 기존 전사문을 교체합니다. `output_format="md"`면 Markdown을 대상으로 합니다. 다른 폴더로 이동한 전사문은 `transcript_file_id`에 해당 Drive 파일 ID를 명시할 수 있습니다. 전사문 말꼬리의 원본 SHA-256이 현재 오디오와 일치해야 유료 전사를 시작하며, 기존 파일 ID 및 현재 폴더는 유지됩니다. 생략 시 원본 폴더의 동명 전사문을 우선 확인합니다. 이전 내용은 [Drive 버전 보관 정책](https://developers.google.com/workspace/drive/api/guides/manage-revisions)의 적용을 받습니다. 원격 MCP는 현재 연결된 Google 계정의 권한으로 직접 갱신합니다.
+- 원본 폴더에 선택 형식의 동명 전사문이 없으면 Drive에서 이름과 원본 SHA-256이 일치하는 후보 한 개만 갱신합니다. 여러 후보 또는 이름이 바뀐 파일은 `transcript_file_id`로 지정하세요. 원격 MCP에서는 원본 폴더에 접근할 수 없어도 원본을 다운로드하고 지정한 전사문을 편집할 수 있으면 재전사 가능합니다.
 - `get_transcription_status(operation)`: 실행 상태(`running` / `completed` / `failed`)와 종료 결과(`result`, 실제 `output_format`, `transcript_file_id`, `transcript_url`, `model` 또는 `error_code`)를 조회합니다. 결과가 보관되지 않은 이전 실행이나 강제 종료에서는 상태만 반환할 수 있습니다. 조회는 새 전사를 시작하지 않습니다.
 
 **모델 변경(관리자용):** Cloud Run 콘솔에서 `scribeflow-transcribe` Job의 환경변수 `SCRIBEFLOW_TRANSCRIPTION_MODEL`에 해당 OpenAI 전사 API에서 사용할 모델 ID를 설정합니다. 기본값은 `gpt-transcribe`입니다. 현재 SDK의 전사 API·언어 및 키워드 매개변수와 호환되는 모델을 지정하세요. 고정 스냅샷 ID가 제공되면 직접 설정할 수 있습니다. 다음 실행부터 적용되며 모델 변경만으로 기존 TXT를 갱신하지 않습니다. 품질을 확인한 뒤 ChatGPT에서 파일을 지정해 재전사를 요청하세요. 모델 ID와 스냅샷이 같은 전사본의 내부 변경 이력은 TXT에서 판별할 수 없습니다.
 
-**Drive 파일 식별:** 연결 계정 모드에서는 원본 ID로 다운로드하고, 원본의 실제 부모 ID로 신규 전사문을 저장하거나 지정한 전사문 ID로 갱신합니다. 이름만으로 중복 파일을 선택하지 않습니다. 로컬 및 기본 rclone 모드는 기존 경로 조회를 사용하며 선택한 ID·해시 및 이름 중복을 확인합니다. 두 모드 모두 게시 전 원본·갱신 대상의 변경을 확인합니다.
+**Drive 파일 식별:** 원격 MCP는 원본 ID로 다운로드하고, 원본의 실제 부모 ID로 신규 전사문을 저장하거나 지정한 전사문 ID로 갱신합니다. 이름만으로 중복 파일을 선택하지 않습니다. 로컬 CLI의 rclone 연동은 기존 경로 조회를 사용하며 선택한 ID·해시 및 이름 중복을 확인합니다. 두 모드 모두 게시 전 원본·갱신 대상의 변경을 확인합니다.
 
 **중복 실행과 결과:** 기존 `scribeflow-oauth` 데이터베이스의 `scribeflow_job_claims`에 원본 ID의 해시, 작업 ID·형식·소유자와 실행별 최소 결과(파일 ID, 형식, 모델 또는 오류 코드)를 기록합니다. Worker에는 이 전용 DB에 한정된 권한을 부여합니다. 결과와 예약은 7일 후 만료되며 UTC 기준 하루 첫 전사 요청에서 최대 100개를 지웁니다. 남은 만료 항목은 이후 요청에서 추가로 정리합니다. 녹음 내용·인증 토큰은 결과 기록에 저장하지 않습니다. [Firestore 할당량](https://docs.cloud.google.com/firestore/quotas)
 
@@ -146,7 +131,7 @@ bash scripts/disable-claim-ttl.sh
 
 7일 지난 예약이 정리되면 동일 파일 ID의 새 요청도 Cloud Run 작업 하나를 생성할 수 있습니다. 일반 전사 요청은 기존 TXT·MD를 보호합니다. 이전 작업의 상태 조회가 불가능할 때에는 최소 2시간 후에 명시적 재시도 또는 재전사가 가능합니다.
 
-ID는 `https://drive.google.com/file/d/FILE_ID/view`에서 확인합니다. 연결 계정 모드의 검색 도구 또는 기존 Google Drive 플러그인에서 파일 ID를 찾을 수 있습니다. 이미 동명 전사문이 있으면 SHA-256 일치 시 `skipped_existing`, 미확인·불일치 시에도 덮어쓰지 않습니다.
+ID는 `https://drive.google.com/file/d/FILE_ID/view`에서 확인합니다. MCP 검색 도구 또는 기존 Google Drive 플러그인에서 파일 ID를 찾을 수 있습니다. 이미 동명 전사문이 있으면 SHA-256 일치 시 `skipped_existing`, 미확인·불일치 시에도 덮어쓰지 않습니다.
 
 **실전 검증 방법:** 원본 음성만 있고 동명 TXT가 없는 파일로 전사 요청 → `completed` 확인 → 원본 Drive 폴더의 **새 TXT 파일 ID·생성시각·본문** 확인. 기존 TXT를 시험 삼아 제거한다면 **휴지통으로 이동**해 복구 가능한 상태로 두세요. 실제 API 호출은 비용이 발생합니다.
 
@@ -170,7 +155,7 @@ bash scripts/preflight-cloud-run.sh
 
 사전 점검은 **현재 클라우드 설정에 접근 가능한 계정에서만** 실행할 수 있습니다. 비밀값이나 출력 전체를 공개 저장소·채팅에 붙여넣지 마세요. 실패하면 오류를 확인한 다음 배포를 중단하세요. 이미 진행 중인 전사 Job이 있다면 완료된 후 배포를 진행해야 합니다.
 
-사전 점검에 통과했다면 **5단계의 두 배포 스크립트**를 재실행합니다. 기존 Google OAuth 클라이언트·OpenAI 키·Drive 인증을 재사용합니다. 실행 중인 서비스의 이미지 주소만 바꿀 때는 Cloud Run의 Job과 서비스에 `gcloud run jobs update --image`와 `gcloud run services update --image`를 각각 사용하면 기존 URL과 접근 설정을 유지합니다. v0.5.0부터 처음 갱신할 때는 Worker 결과 기록용 Firestore 권한과 Worker 환경변수 `GOOGLE_CLOUD_PROJECT`, `SCRIBEFLOW_REGION`(Worker 리전)도 설정해야 합니다. 전체 배포 스크립트가 이를 설정합니다. 배포 자체는 OpenAI 전사 API를 호출하지 않습니다.
+사전 점검에 통과했다면 **5단계의 두 배포 스크립트**를 재실행합니다. v0.6.0부터 원격 MCP는 연결 계정 OAuth만 지원합니다. 이전 고정 계정 배포에서 전환할 때는 Drive 범위를 등록하고 5단계 전체 배포를 수행하세요. 새 작업 암호화 키가 아직 없으면 배포 스크립트가 생성합니다(이 경우 기존 배포 전용 사전 점검은 건너뜁니다). 기존 rclone 마운트와 환경변수는 전체 배포로 제거되며, 이전 rclone Secret에 부여한 Worker의 접근 권한도 해제할 수 있습니다. 인증 비밀 자체는 다른 용도로 사용할 수 있으므로 삭제하지 않습니다. 이전에 Drive 권한을 승인하지 않은 연결은 재인증해야 합니다. 기존 Google OAuth 클라이언트·OpenAI 키·Drive 인증을 재사용합니다. 실행 중인 서비스의 이미지 주소만 바꿀 때는 Cloud Run의 Job과 서비스에 `gcloud run jobs update --image`와 `gcloud run services update --image`를 각각 사용하면 기존 URL과 접근 설정을 유지합니다. 이미지만 바꾸는 갱신은 인증과 Worker 환경변수 및 결과 기록 권한이 현재 배포 계약과 같은 경우에만 사용하세요. 배포 자체는 OpenAI 전사 API를 호출하지 않습니다.
 
 **배포 후 확인:** 아래 [저비용 운영 구성](#저비용-운영-구성)의 읽기 전용 명령으로 활성 리전, 저장소, 버킷, TTL을 확인합니다. `bash scripts/audit-cloud-storage.sh`로 이미지와 로그 보관 상태를 확인할 수 있습니다. 두 리전이 다르면 `SCRIBEFLOW_WORKER_REGION`을 지정하세요.
 
@@ -217,7 +202,7 @@ gcloud firestore fields ttls list --project="$GCP_PROJECT" --database=scribeflow
 
 - **다른 리전 시험:** 기존 ChatGPT 연결을 유지하려면 별도 Cloud Run Job을 대상 리전에 만들고, 기존 전사 작업과 같은 이미지·실행 계정·Secret Manager 참조를 사용합니다. 짧은 합성 음성의 Drive ID로 시험 작업을 한 번 실행하고, TXT 생성과 작업 로그를 확인합니다. 미국 OpenAI 주소를 시험하려면 해당 API 프로젝트에서 사용 가능한지 확인한 뒤 시험 Job의 `OPENAI_BASE_URL`에 `https://us.api.openai.com/v1`을 설정합니다. 기존 Gateway를 전환하기 전에 결제 보고서에서 결과를 확인합니다.
 - **전사 Job 리전 전환:** 배포 스크립트에서 `SCRIBEFLOW_REGION`은 기존 Gateway 리전, `SCRIBEFLOW_WORKER_REGION`은 새 전사 Job 리전으로 지정합니다. 새 리전에도 기존 Job과 같은 이름을 쓰고 Gateway 서비스 계정에 실행 권한을 부여합니다. 기존 Job의 상태 조회를 지원하려면 `SCRIBEFLOW_PREVIOUS_WORKER_REGION`에 이전 Job 리전을 지정하고 이전 Job을 보존합니다. 기존 Gateway만 업데이트할 때는 Gateway의 `SCRIBEFLOW_REGION` 환경변수를 새 **Job 리전**으로 지정하면 OAuth와 ChatGPT 연결 주소를 유지할 수 있습니다. 지역별 OpenAI 주소를 사용하는 경우 전사 Job에 `OPENAI_BASE_URL`도 설정합니다.
-- **사용자 Google Drive:** 최종 산출물은 원본 음성과 같은 폴더의 TXT(기본값) 또는 Markdown(선택) **한 개**입니다. 다른 형식의 Google Docs·Sheets·Slides 문서로 복사하는 작업은 기존 Google Drive 플러그인에 맡깁니다. Cloud Run 작업용 원본 복사본, 무재인코딩 오디오 조각, 구간별 전사·감지 언어 캐시 및 manifest는 정상 완료 후 삭제를 시도합니다. 연결 계정 모드에서는 전체 분할 오디오를 동시에 보관하지 않고 한 조각씩 처리합니다. 원본은 작업 메모리에 들어가야 하며, 기본 Worker는 2 GiB 메모리, 연결 계정 작업은 최대 45분 제한을 사용합니다. Cloud Run Job이 종료되면 임시 파일시스템도 사라집니다. 전사 결과가 모두 비어 있으면 파일을 생성하지 않고 실패 상태로 알립니다.
+- **사용자 Google Drive:** 최종 산출물은 원본 음성과 같은 폴더의 TXT(기본값) 또는 Markdown(선택) **한 개**입니다. 다른 형식의 Google Docs·Sheets·Slides 문서로 복사하는 작업은 기존 Google Drive 플러그인에 맡깁니다. Cloud Run 작업용 원본 복사본, 무재인코딩 오디오 조각, 구간별 전사·감지 언어 캐시 및 manifest는 정상 완료 후 삭제를 시도합니다. 원격 Worker는 전체 분할 오디오를 동시에 보관하지 않고 한 조각씩 처리합니다. 원본은 작업 메모리에 들어가야 하며, 기본 Worker는 2 GiB 메모리, 작업은 최대 45분 제한을 사용합니다. Cloud Run Job이 종료되면 임시 파일시스템도 사라집니다. 전사 결과가 모두 비어 있으면 파일을 생성하지 않고 실패 상태로 알립니다.
 - **Cloud Logging:** Google Cloud의 기본 `_Default` 로그 버킷 보관기간은 통상 30일입니다. `_Required` 버킷은 400일이며 임의로 단축할 수 없습니다. 로그에는 녹음 원문이나 API 키를 출력하지 않도록 설계했지만, 오류 유형과 작업 메타데이터는 남을 수 있습니다. 기존 보관 정책을 확인하지 않고 변경하지 마세요.
 
 **읽기 전용 점검(아직 아무것도 정리하지 않음):**
@@ -246,7 +231,7 @@ gcloud artifacts repositories set-cleanup-policies scribeflow \
 | 연결 시 `403` | Cloud Run 서비스의 비공개 상태. `scripts/enable-mcp-access.sh` 실행 |
 | Google 계정 권한 오류 | OAuth 테스트 사용자, 로그인 이메일, Cloud Run `SCRIBEFLOW_GOOGLE_EMAIL` 일치 여부 |
 | 전사 작업 실패 | [Cloud Run Job 실행 로그](https://console.cloud.google.com/run/jobs)의 `scribeflow-transcribe` 확인 (토큰·비밀은 공유하지 않음) |
-| 공유받은 폴더의 파일 검색 실패 | 최신 이미지와 `gdrive` 인증 계정의 해당 파일 접근 권한 확인 |
+| 공유받은 폴더의 파일 검색 실패 | 연결한 Google 계정의 해당 파일 접근 권한 확인 |
 
 ## 완전 제거
 
@@ -255,12 +240,11 @@ gcloud artifacts repositories set-cleanup-policies scribeflow \
 1. **ChatGPT**: Plugins에서 ScribeFlow 연결을 삭제합니다. Google 계정의 [제3자 앱 연결](https://myaccount.google.com/connections)에서도 ScribeFlow 접근 권한을 취소할 수 있습니다.
 2. **Cloud Shell**: 저장소를 다시 클론하거나 기존 `~/ScribeFlow`에서 아래 스크립트를 실행합니다. 먼저 **dry-run으로 제거 대상 목록**을 확인합니다.
 
-   Gateway와 Job의 리전이 다르면 `SCRIBEFLOW_WORKER_REGION`에 운영 Job 리전을 지정합니다. 연결 계정 모드에서 생성한 작업 암호화 키도 제거 대상입니다.
+   Gateway와 Job의 리전이 다르면 `SCRIBEFLOW_WORKER_REGION`에 운영 Job 리전을 지정합니다. 작업 암호화 키도 제거 대상입니다.
 
    ```bash
    export GCP_PROJECT='YOUR_PROJECT_ID'
    export SCRIBEFLOW_OPENAI_SECRET='YOUR_OPENAI_SECRET_NAME'
-   export SCRIBEFLOW_RCLONE_SECRET='YOUR_RCLONE_SECRET_NAME'
    cd ~/ScribeFlow
    bash scripts/uninstall-cloud-run.sh
    # 검토 후 앱 전용 리소스 실제 삭제:
@@ -270,7 +254,7 @@ gcloud artifacts repositories set-cleanup-policies scribeflow \
    제거 범위: `scribeflow-mcp` Cloud Run 서비스, `scribeflow-transcribe` Job, `scribeflow-oauth` Firestore 데이터베이스·OAuth 로그인 상태, `scribeflow` Artifact Registry 저장소와 이미지, `scribeflow-worker`·`scribeflow-gateway` 서비스 계정 및 관련 IAM, `scribeflow-google-client-secret`·`scribeflow-oauth-seed`·구형 앱 전용 인증 비밀. Firestore·이미지 삭제는 되돌릴 수 없습니다.
 
 3. **Google Auth Platform**의 [클라이언트](https://console.cloud.google.com/auth/clients)에서 ScribeFlow용 OAuth **웹 클라이언트**를 삭제합니다. 브랜드·테스트 사용자 설정은 프로젝트에 남을 수 있으나, 공용 프로젝트라면 다른 앱을 위해 보존하세요.
-4. **Secret Manager**: `SCRIBEFLOW_OPENAI_SECRET` 및 `SCRIBEFLOW_RCLONE_SECRET`가 *ScribeFlow 전용으로 새로 만든 비밀인 경우에만* 수동으로 삭제합니다. 다른 서비스가 사용하는 기존 비밀이면 유지합니다. **OpenAI API 키도** 다른 용도가 없다면 [OpenAI 대시보드](https://platform.openai.com/api-keys)에서 별도로 폐기합니다. rclone 인증 설정도 다른 프로그램에서 사용한다면 유지합니다.
+4. **Secret Manager**: `SCRIBEFLOW_OPENAI_SECRET`과 이전 버전의 rclone 인증 비밀은 *ScribeFlow 전용이고 더 이상 필요하지 않은 경우에만* 수동으로 삭제합니다. 다른 서비스가 사용하는 기존 비밀이면 유지합니다. **OpenAI API 키도** 다른 용도가 없다면 [OpenAI 대시보드](https://platform.openai.com/api-keys)에서 별도로 폐기합니다. rclone 인증 설정도 다른 프로그램에서 사용한다면 유지합니다.
 5. **과금·잔여 리소스**: [예산 알림](https://console.cloud.google.com/billing/budgets), Cloud Build 스테이징 스토리지, Cloud Logging 및 기타 Google Cloud 자원을 검토합니다. 공용 결제 계정·공용 Cloud Shell 설정은 자동 삭제하지 않습니다.
 6. **Google Cloud 프로젝트 자체 폐기(선택):** 이 프로젝트에 ScribeFlow 외의 데이터나 서비스가 없다는 것을 확인한 뒤 [리소스 관리자](https://console.cloud.google.com/cloud-resource-manager)에서 **해당 프로젝트를 종료**하면 남은 프로젝트 소유 자원도 정리할 수 있습니다. 프로젝트 삭제는 광범위하게 파괴적이므로 앱 제거 스크립트가 자동 수행하지 않습니다. Google Cloud 결제 계정과 OpenAI 계정은 별도입니다.
 7. **로컬 설치물**: 실행 중인 전사가 없을 때 `scribeflow auth remove`(macOS 전용), `uv tool uninstall scribeflow`, 소스 체크아웃·전용 캐시를 제거합니다. 공용 `rclone.conf`, uv 캐시, FFmpeg·Python과 **사용자 원본 오디오 및 완성된 TXT**는 자동 삭제하지 않습니다.

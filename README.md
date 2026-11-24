@@ -29,7 +29,7 @@ scribeflow auth set       # macOS 전용: API 키를 키체인에 저장
 scribeflow auth status
 ```
 
-macOS가 아닌 환경에서는 `auth set` 대신 `OPENAI_API_KEY` 환경변수를 설정하세요. FFmpeg 설치는 macOS(Homebrew `brew install ffmpeg`), Windows(`winget install Gyan.FFmpeg`), Linux(배포판 패키지 관리자) 등을 이용할 수 있습니다. Google Drive를 사용하려면 `rclone config`로 이름이 `gdrive`인 원격 저장소를 추가해야 합니다. 개발용 소스 설치는 `git clone` → `uv sync` → `uv run scribeflow ...` 순서입니다.
+macOS가 아닌 환경에서는 `auth set` 대신 `OPENAI_API_KEY` 환경변수를 설정하세요. FFmpeg 설치는 macOS(Homebrew `brew install ffmpeg`), Windows(`winget install Gyan.FFmpeg`), Linux(배포판 패키지 관리자) 등을 이용할 수 있습니다. 로컬 CLI에서 Google Drive 파일을 직접 처리할 때만 `rclone config`로 이름이 `gdrive`인 원격 저장소를 추가하세요. 로컬 파일과 ChatGPT 원격 MCP에는 rclone이 필요 없습니다. 개발용 소스 설치는 `git clone` → `uv sync` → `uv run scribeflow ...` 순서입니다.
 
 키는 채팅, 저장소 또는 명령 인수에 붙여넣지 마세요. macOS 이외에서는 `OPENAI_API_KEY` 환경변수를 사용합니다. `auth status`는 키 저장 여부만 검사합니다.
 
@@ -80,7 +80,7 @@ scribeflow transcribe '파일_ID' --json
 
 ### ChatGPT 원격 MCP 사용
 
-[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 전달합니다. 연결 계정별 Drive 전체 검색은 [선택 설정](docs/cloud-run.md#연결-계정별-google-drive-접근)입니다.
+[Cloud Run 배포 안내](docs/cloud-run.md)를 완료하면 ChatGPT에서 `ScribeFlow` MCP를 선택하고 Drive **파일 링크 또는 파일 ID**를 전달합니다. 원격 MCP는 연결된 Google 계정의 OAuth 권한으로 Drive API에 직접 접근합니다. 서버 측 rclone 설치나 별도 Drive 인증은 필요 없습니다.
 
 - `transcribe_audio`는 새 녹음을 전사합니다. 기본 `output_format="txt"`이며, `output_format="md"`를 선택하면 Markdown으로 저장합니다. 같은 파일의 작업을 반복 요청하면 기존 실행 상태와 확인된 결과를 반환합니다. 원본 SHA-256이 일치하는 인접 TXT·MD가 이미 있으면 실제 형식과 파일 ID를 반환하며 유료 전사를 하지 않습니다. 작업 실패 등을 다시 시도할 때 `retry=True`를 사용할 수 있습니다.
 - `retranscribe_audio`는 선택한 녹음을 현재 설정 모델로 다시 전사하고, 원본 SHA-256이 일치하는 기존 TXT 또는 선택한 Markdown(`output_format="md"`)의 내용만 갱신합니다. 같은 Drive 파일 ID와 링크가 유지됩니다. 새 전사에 OpenAI API 사용료가 발생합니다.
@@ -111,7 +111,7 @@ GitHub에서 받은 소스 폴더에서 실행하는 경우 캐시는 **프로�
 - 로컬 CLI에서 **실패한 전사 캐시의 기본 보존 기간은 24시간**, 전체 **256MiB는 소프트 용량 예산**입니다. 만료되거나 초과해도 다음 전사 또는 수동 정리 시에만 정리되므로 실시간 절대 상한은 아닙니다. 활성 작업은 잠금으로 보호합니다.
 - 실패 시에도 중간 파일을 즉시 폐기하려면 `SCRIBEFLOW_FAILED_CACHE_MODE=discard`로 실행합니다. 기본값 `retry`는 부분 전사문을 잠깐 남겨 같은 조건의 재시도 때 API 비용을 줄입니다. **`discard`는 실패 후 재시도할 때 이미 처리된 음성도 다시 과금될 수 있습니다.**
 - `scribeflow cache status`로 남은 용량을 확인하고 `scribeflow cache clean`으로 정리합니다. 별도의 상시 청소 서비스는 없습니다.
-- 원격 Cloud Run Job은 실행용 임시 파일시스템이 종료 시 사라집니다. 연결 계정 모드에서는 전체 분할본을 보관하지 않고 각 검증된 조각을 처리합니다. 작업 결과와 중복 방지 기록은 기존 Firestore에 7일간 보관하며 다음 전사 요청에서 만료된 기록을 정리합니다. SDK의 자동 재요청은 사용하지 않으며, 명시적 재시도는 이미 처리한 구간을 다시 과금할 수 있습니다.
+- 원격 Cloud Run Job은 실행용 임시 파일시스템이 종료 시 사라집니다. 원격 Worker는 전체 분할본을 보관하지 않고 각 검증된 조각을 처리합니다. 작업 결과와 중복 방지 기록은 기존 Firestore에 7일간 보관하며 다음 전사 요청에서 만료된 기록을 정리합니다. SDK의 자동 재요청은 사용하지 않으며, 명시적 재시도는 이미 처리한 구간을 다시 과금할 수 있습니다.
 
 ## 전사 정확도 비교 (별도 API 요금 없음)
 

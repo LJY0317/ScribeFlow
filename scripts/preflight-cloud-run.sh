@@ -9,7 +9,6 @@ WORKER_REGION="${SCRIBEFLOW_WORKER_REGION:-$REGION}"
 JOB=scribeflow-transcribe
 SERVICE=scribeflow-mcp
 OPENAI_SECRET="${SCRIBEFLOW_OPENAI_SECRET:-scribeflow-openai-api-key}"
-RCLONE_SECRET="${SCRIBEFLOW_RCLONE_SECRET:-scribeflow-rclone-config}"
 
 for program in git gcloud python3; do
   command -v "$program" >/dev/null || {
@@ -82,13 +81,7 @@ done
 
 gcloud firestore databases describe --database=scribeflow-oauth \
   --project="$GCP_PROJECT" >/dev/null
-secrets=("$OPENAI_SECRET" scribeflow-google-client-secret scribeflow-oauth-seed)
-if [[ "${SCRIBEFLOW_LINKED_DRIVE:-0}" == 1 ]]; then
-  secrets+=(scribeflow-drive-job-key)
-else
-  secrets+=("$RCLONE_SECRET")
-fi
-for secret in "${secrets[@]}"; do
+for secret in "$OPENAI_SECRET" scribeflow-google-client-secret scribeflow-oauth-seed scribeflow-drive-job-key; do
   gcloud secrets versions describe latest --secret="$secret" \
     --project="$GCP_PROJECT" >/dev/null
 done

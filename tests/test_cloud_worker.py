@@ -1,143 +1,59 @@
 import os
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from scribeflow.cloud_worker import main, run_job
 
 
 class CloudWorkerTests(unittest.TestCase):
-    def test_invalid_file_does_not_call_transcription(self):
-        with patch.dict(os.environ, {
-            "SCRIBEFLOW_SOURCE_FILE_ID": "../file",
-            "SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID": "folder_" + "a" * 25,
+    def setUp(self):
+        self.audio_id = "audio_" + "a" * 25
+        self.env = {
+            "SCRIBEFLOW_SOURCE_FILE_ID": self.audio_id,
+            "SCRIBEFLOW_LINKED_DRIVE_ENVELOPE": "sealed",
+            "SCRIBEFLOW_REQUEST_OWNER": "google-user",
             "OPENAI_API_KEY": "fake",
-            "SCRIBEFLOW_RCLONE_CONFIG_SECRET": "/not/present",
-        }):
-            with patch("scribeflow.cloud_worker.transcribe") as transcribe:
+        }
+
+    def test_invalid_request_stops_before_transcription(self):
+        for overrides in (
+            {"SCRIBEFLOW_SOURCE_FILE_ID": "../file"},
+            {"SCRIBEFLOW_KEYWORDS_JSON": '{"not": "a list"}'},
+            {"SCRIBEFLOW_LINKED_DRIVE_ENVELOPE": ""},
+            {"SCRIBEFLOW_REQUEST_OWNER": ""},
+        ):
+            with self.subTest(overrides=overrides), patch.dict(
+                os.environ, {**self.env, **overrides}, clear=True
+            ), patch("scribeflow.cloud_worker.transcribe_drive") as transcribe:
                 with self.assertRaises(ValueError):
                     run_job()
                 transcribe.assert_not_called()
 
-    def test_secret_is_private_and_temporary(self):
-        with tempfile.TemporaryDirectory() as directory:
-            original = Path(directory) / "config-secret"
-            original.write_text("[gdrive]\ntype = drive\n", encoding="utf-8")
-            with patch.dict(os.environ, {
-                "SCRIBEFLOW_SOURCE_FILE_ID": "audio_" + "a" * 25,
-                "SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID": "folder_" + "b" * 25,
-                "OPENAI_API_KEY": "fake",
-                "SCRIBEFLOW_RCLONE_CONFIG_SECRET": str(original),
-            }):
-                private_paths = []
-
-                def fake_transcribe(file_id, **kwargs):
-                    self.assertEqual(file_id, "audio_" + "a" * 25)
-                    self.assertEqual(kwargs, {
-                        "keywords": (), "prompt": "", "language": "auto", "replace_existing": False,
-                        "retain_chunks": False,
-                    })
-                    config = Path(os.environ["RCLONE_CONFIG"])
-                    self.assertTrue(config.exists())
-                    self.assertEqual(config.read_bytes(), original.read_bytes())
-                    self.assertEqual(config.stat().st_mode & 0o777, 0o600)
-                    private_paths.append(config.parent)
-                    self.assertEqual(Path(os.environ["SCRIBEFLOW_CACHE_DIR"]).parent, config.parent)
-                    return {"ok": True, "status": "created"}
-
-                with patch("scribeflow.cloud_worker.transcribe", side_effect=fake_transcribe):
-                    self.assertEqual(run_job()["status"], "created")
-                self.assertFalse(private_paths[0].exists())
-                self.assertEqual(original.read_text(), "[gdrive]\ntype = drive\n")
-
-    def test_entire_drive_requires_no_folder_id(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config = Path(directory) / "config-secret"
-            config.write_text("[gdrive]\ntype = drive\n", encoding="utf-8")
-            with patch.dict(os.environ, {
-                "SCRIBEFLOW_SOURCE_FILE_ID": "audio_" + "a" * 25,
-                "SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID": "",
-                "OPENAI_API_KEY": "fake",
-                "SCRIBEFLOW_RCLONE_CONFIG_SECRET": str(config),
-            }):
-                with patch("scribeflow.cloud_worker.transcribe", return_value={"ok": True}) as transcribe:
-                    self.assertTrue(run_job()["ok"])
-                transcribe.assert_called_once_with(
-                    "audio_" + "a" * 25, keywords=(), prompt="", language="auto",
-                    replace_existing=False, retain_chunks=False,
-                )
-
-    def test_context_from_job_environment_reaches_transcription(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config = Path(directory) / "config-secret"
-            config.write_text("[gdrive]\ntype = drive\n", encoding="utf-8")
-            with patch.dict(os.environ, {
-                "SCRIBEFLOW_SOURCE_FILE_ID": "audio_" + "a" * 25,
-                "OPENAI_API_KEY": "fake",
-                "SCRIBEFLOW_RCLONE_CONFIG_SECRET": str(config),
-                "SCRIBEFLOW_KEYWORDS_JSON": '["Kubernetes", "OAuth"]',
-                "SCRIBEFLOW_PROMPT": "Technical discussion",
-                "SCRIBEFLOW_LANGUAGE": "en",
-                "SCRIBEFLOW_REPLACE_EXISTING": "true",
-            }):
-                with patch(
-                    "scribeflow.cloud_worker.transcribe", return_value={"ok": True}
-                ) as transcribe:
-                    self.assertTrue(run_job()["ok"])
-                    transcribe.assert_called_once_with(
-                        "audio_" + "a" * 25,
-                        keywords=("Kubernetes", "OAuth"),
-                        prompt="Technical discussion",
-                        language="en",
-                        replace_existing=True, retain_chunks=False,
-                    )
-
-    def test_external_transcript_id_reaches_worker(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config = Path(directory) / "config"
-            config.write_text("[gdrive]\ntype = drive\n", encoding="utf-8")
-            with patch.dict(os.environ, {
-                "SCRIBEFLOW_SOURCE_FILE_ID": "audio_" + "a" * 25,
-                "SCRIBEFLOW_TRANSCRIPT_FILE_ID": "text_" + "b" * 25,
-                "SCRIBEFLOW_RCLONE_CONFIG_SECRET": str(config),
-                "SCRIBEFLOW_REPLACE_EXISTING": "true", "OPENAI_API_KEY": "fake",
-            }):
-                with patch("scribeflow.cloud_worker.transcribe", return_value={"ok": True}) as transcribe:
-                    run_job()
-                self.assertEqual(
-                    transcribe.call_args.kwargs["transcript_file_id"], "text_" + "b" * 25
-                )
-
-    def test_markdown_and_replacement_do_not_require_parent_create_permission(self):
-        from scribeflow.linked_drive import DriveCredential
-        from cryptography.fernet import Fernet
-        from types import SimpleNamespace
-        key = Fernet.generate_key().decode()
-        audio_id = "audio_" + "a" * 25
+    def test_context_and_target_reach_direct_drive_transcription(self):
+        credential = object()
         with patch.dict(os.environ, {
-            "SCRIBEFLOW_SOURCE_FILE_ID": audio_id,
-            "SCRIBEFLOW_LINKED_DRIVE_ENVELOPE": "sealed",
-            "SCRIBEFLOW_DRIVE_JOB_KEY": key,
+            **self.env,
+            "SCRIBEFLOW_KEYWORDS_JSON": '["Kubernetes", "OAuth"]',
+            "SCRIBEFLOW_PROMPT": "Technical discussion",
+            "SCRIBEFLOW_LANGUAGE": "en",
             "SCRIBEFLOW_REPLACE_EXISTING": "true",
             "SCRIBEFLOW_OUTPUT_FORMAT": "md",
-            "OPENAI_API_KEY": "fake",
-        }), patch("scribeflow.cloud_worker.DriveCredential.open", return_value=SimpleNamespace(
-            rclone_config=lambda _: "[gdrive]\ntype = drive\n",
-        )), patch("scribeflow.cloud_worker.transcribe_drive", return_value={"ok": True}) as call:
+            "SCRIBEFLOW_TRANSCRIPT_FILE_ID": "text_" + "b" * 25,
+        }, clear=True), patch(
+            "scribeflow.cloud_worker.DriveCredential.open", return_value=credential
+        ) as open_credential, patch(
+            "scribeflow.cloud_worker.transcribe_drive", return_value={"ok": True}
+        ) as transcribe:
             self.assertTrue(run_job()["ok"])
-            self.assertEqual(call.call_args.kwargs["output_format"], "md")
-            self.assertTrue(call.call_args.kwargs["replace_existing"])
-
-    def test_invalid_context_stops_before_transcription(self):
-        with patch.dict(os.environ, {
-            "SCRIBEFLOW_SOURCE_FILE_ID": "audio_" + "a" * 25,
-            "SCRIBEFLOW_KEYWORDS_JSON": '{"not": "a list"}',
-        }):
-            with patch("scribeflow.cloud_worker.transcribe") as transcribe:
-                with self.assertRaises(ValueError):
-                    run_job()
-                transcribe.assert_not_called()
+            open_credential.assert_called_once_with("sealed", self.audio_id)
+            private = transcribe.call_args.args[2]
+            transcribe.assert_called_once_with(
+                credential, self.audio_id, private,
+                keywords=("Kubernetes", "OAuth"), prompt="Technical discussion",
+                language="en", replace_existing=True, output_format="md",
+                transcript_file_id="text_" + "b" * 25,
+            )
+            self.assertFalse(private.exists())
 
     def test_job_error_does_not_log_secret(self):
         with patch("scribeflow.cloud_worker.run_job", side_effect=RuntimeError("API KEY SECRET")):

@@ -20,6 +20,7 @@ class CloudGatewayTests(unittest.TestCase):
             "SCRIBEFLOW_GOOGLE_CLIENT_SECRET": "test-secret",
             "SCRIBEFLOW_OAUTH_SEED": "s" * 64,
             "GOOGLE_CLOUD_PROJECT": "sample-cloud-project",
+            "SCRIBEFLOW_DRIVE_JOB_KEY": "set-for-test",
         }
 
     def server(self, **settings):
@@ -33,7 +34,7 @@ class CloudGatewayTests(unittest.TestCase):
     def test_google_config_required(self):
         for key in ("SCRIBEFLOW_MCP_URL", "SCRIBEFLOW_GOOGLE_EMAIL",
                     "SCRIBEFLOW_GOOGLE_CLIENT_ID", "SCRIBEFLOW_GOOGLE_CLIENT_SECRET",
-                    "SCRIBEFLOW_OAUTH_SEED"):
+                    "SCRIBEFLOW_OAUTH_SEED", "SCRIBEFLOW_DRIVE_JOB_KEY"):
             with self.subTest(missing=key):
                 settings = {**self.settings}
                 settings.pop(key)
@@ -44,7 +45,9 @@ class CloudGatewayTests(unittest.TestCase):
     def test_replacement_is_a_separate_destructive_tool(self):
         server = self.server()
         tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
-        self.assertNotIn("search_drive_files", tools)
+        self.assertEqual(set(tools), {"get_profile", "get_google_profile_photo", "search_drive_files",
+                                    "list_google_shared_drives", "check_drive_file", "transcribe_audio",
+                                    "retranscribe_audio", "get_transcription_status"})
         self.assertEqual(tools["get_profile"].meta["openai/profile"], True)
         self.assertFalse(tools["transcribe_audio"].annotations.destructive_hint)
         self.assertTrue(tools["retranscribe_audio"].annotations.destructive_hint)
@@ -97,7 +100,6 @@ class CloudGatewayTests(unittest.TestCase):
         from fastmcp.server.auth import AccessToken
 
         server = self.server(
-            SCRIBEFLOW_LINKED_DRIVE="1", SCRIBEFLOW_DRIVE_JOB_KEY="set-for-test",
             SCRIBEFLOW_GOOGLE_ADDITIONAL_EMAILS="second@example.com",
         )
 
@@ -129,7 +131,7 @@ class CloudGatewayTests(unittest.TestCase):
 
         key = Fernet.generate_key().decode()
         server = self.server(
-            SCRIBEFLOW_LINKED_DRIVE="1", SCRIBEFLOW_DRIVE_JOB_KEY=key,
+            SCRIBEFLOW_DRIVE_JOB_KEY=key,
             SCRIBEFLOW_GOOGLE_ADDITIONAL_EMAILS="second@example.com third@example.com",
         )
         file_id = "audio_" + "a" * 26
@@ -168,7 +170,7 @@ class CloudGatewayTests(unittest.TestCase):
         from fastmcp.server.auth import AccessToken
 
         key = Fernet.generate_key().decode()
-        server = self.server(SCRIBEFLOW_LINKED_DRIVE="1", SCRIBEFLOW_DRIVE_JOB_KEY=key)
+        server = self.server(SCRIBEFLOW_DRIVE_JOB_KEY=key)
         audio_id = "audio_" + "a" * 25
         text_id = "transcript_" + "b" * 25
 

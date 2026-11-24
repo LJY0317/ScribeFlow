@@ -8,7 +8,6 @@ WORKER_REGION="${SCRIBEFLOW_WORKER_REGION:-$REGION}"
 WORKER="scribeflow-worker@${GCP_PROJECT}.iam.gserviceaccount.com"
 GATEWAY="scribeflow-gateway@${GCP_PROJECT}.iam.gserviceaccount.com"
 OPENAI_SECRET="${SCRIBEFLOW_OPENAI_SECRET:-scribeflow-openai-api-key}"
-RCLONE_SECRET="${SCRIBEFLOW_RCLONE_SECRET:-scribeflow-rclone-config}"
 
 if [[ "${1:-}" != '--apply' ]]; then
   cat <<EOF
@@ -17,7 +16,7 @@ Will delete from project $GCP_PROJECT:
 - Cloud Run service scribeflow-mcp ($REGION); job scribeflow-transcribe ($WORKER_REGION)
 - Firestore database scribeflow-oauth (including OAuth login state)
 - Artifact Registry repository scribeflow (including its images)
-- Secret Manager secrets scribeflow-google-client-secret, scribeflow-oauth-seed, and optional scribeflow-drive-job-key
+- Secret Manager secrets scribeflow-google-client-secret, scribeflow-oauth-seed, and scribeflow-drive-job-key
 - Dedicated service accounts scribeflow-worker and scribeflow-gateway
 Will NOT delete: project, original recordings/TXT, existing OpenAI/rclone secrets.
 Separately disconnect the ChatGPT MCP plugin and delete its Google OAuth Web client
@@ -48,11 +47,9 @@ done
 gcloud projects remove-iam-policy-binding "$GCP_PROJECT" \
   --member="serviceAccount:$WORKER" --role=roles/datastore.user \
   --condition="expression=resource.name==\"projects/${GCP_PROJECT}/databases/scribeflow-oauth\",title=scribeflow-worker-results" >/dev/null 2>&1 || true
-for name in "$OPENAI_SECRET" "$RCLONE_SECRET"; do
-  gcloud secrets remove-iam-policy-binding "$name" --project="$GCP_PROJECT" \
-    --member="serviceAccount:$WORKER" \
-    --role=roles/secretmanager.secretAccessor >/dev/null 2>&1 || true
-done
+gcloud secrets remove-iam-policy-binding "$OPENAI_SECRET" --project="$GCP_PROJECT" \
+  --member="serviceAccount:$WORKER" \
+  --role=roles/secretmanager.secretAccessor >/dev/null 2>&1 || true
 for name in scribeflow-worker scribeflow-gateway; do
   if gcloud iam service-accounts describe "$name@${GCP_PROJECT}.iam.gserviceaccount.com" \
     --project="$GCP_PROJECT" >/dev/null 2>&1; then

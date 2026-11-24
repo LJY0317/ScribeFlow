@@ -3,7 +3,7 @@
 A claim is scoped to a Google Drive file ID (not its filename or keywords).
 We reuse the gateway's existing Firestore database and authorized session.
 Firestore stores the hashed file ID, operation, timestamps, and the requesting
-profile ID in linked mode. The claim contains no OAuth credentials.
+profile ID. The claim contains no OAuth credentials.
 
 Firestore's atomic createDocument and updateTime preconditions provide safe
 claim/retry races even across distinct Cloud Run gateway instances.
@@ -229,11 +229,13 @@ class DeduplicatingCloudRunJobs:
         self.claims = claims
         self.clock = clock
 
-    def status(self, operation: str, *, owner: str = "") -> dict:
-        known_owner = not owner or self.claims.owns_operation(owner, operation)
+    def status(self, operation: str, *, owner: str) -> dict:
+        if not owner:
+            raise PermissionError("A connected Google account is required")
+        known_owner = self.claims.owns_operation(owner, operation)
         return self._with_result(self.backend.status(operation), owner=owner, require_receipt=not known_owner)
 
-    def _with_result(self, state: dict, *, owner: str = "", require_receipt: bool = False) -> dict:
+    def _with_result(self, state: dict, *, owner: str, require_receipt: bool = False) -> dict:
         result = dict(state)
         execution = result.pop("execution", None)
         receipt = None
@@ -244,7 +246,7 @@ class DeduplicatingCloudRunJobs:
                 logger.warning("Result receipt unavailable (%s)", type(exc).__name__)
         if require_receipt and (receipt is None or receipt[0] != owner):
             raise PermissionError("This operation does not belong to the connected account")
-        if receipt is not None and (not owner or receipt[0] == owner):
+        if receipt is not None and receipt[0] == owner:
             result.update(receipt[1])
         elif execution and result.get("status") in ("completed", "failed"):
             result["result_available"] = False
@@ -262,8 +264,7 @@ class DeduplicatingCloudRunJobs:
             replace_existing=replace_existing,
             **({"output_format": output_format} if output_format != "txt" else {}),
             **({"transcript_file_id": transcript_file_id} if transcript_file_id else {}),
-            **({"drive_envelope": drive_envelope} if drive_envelope else {}),
-            **({"owner": claim["fields"]["owner"]["stringValue"]} if drive_envelope else {}),
+            drive_envelope=drive_envelope, owner=claim["fields"]["owner"]["stringValue"],
         )
         try:
             self.claims.publish(key, claim, result["operation"])
@@ -277,11 +278,13 @@ class DeduplicatingCloudRunJobs:
     def start(
         self, file_id: str, keywords: list[str] | tuple[str, ...] | None = None,
         prompt: str = "", retry: bool = False, language: str = "auto",
-        *, replace_existing: bool = False, owner: str = "", drive_envelope: str = "",
+        *, owner: str, drive_envelope: str, replace_existing: bool = False,
         transcript_file_id: str = "", output_format: str = "txt",
     ) -> dict:
         if not isinstance(file_id, str) or not _FILE_ID.fullmatch(file_id):
             raise ValueError("A valid Google Drive file ID is required")
+        if not owner or not drive_envelope:
+            raise ValueError("A connected Google account is required")
         normalized, prompt = normalize_transcription_context(keywords, prompt)
         language = normalize_language(language)
         output_format = normalize_output_format(output_format)
@@ -317,7 +320,7 @@ class DeduplicatingCloudRunJobs:
             operation = _recorded_operation(existing)
             visible_operation = (
                 {"operation": operation}
-                if not owner or existing["fields"].get("owner", {}).get("stringValue") == owner
+                if existing["fields"].get("owner", {}).get("stringValue") == owner
                 else {}
             )
             if operation:

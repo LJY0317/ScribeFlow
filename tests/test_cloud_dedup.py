@@ -4,6 +4,7 @@ import copy
 import hashlib
 import threading
 import unittest
+from functools import partial
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
@@ -93,22 +94,24 @@ class DeduplicationTests(unittest.TestCase):
         self.jobs = DeduplicatingCloudRunJobs(
             self.backend, self.claims, clock=lambda: self.now,
         )
+        self.start = partial(self.jobs.start, owner="google-a", drive_envelope="encrypted-a")
 
     def test_expired_claim_cleanup_failure_does_not_stop_submission(self):
         self.claims.sweep_expired.side_effect = RuntimeError("maintenance unavailable")
         with self.assertLogs("scribeflow.cloud_dedup", level="WARNING"):
-            self.assertEqual(self.jobs.start(FILE_ID)["status"], "submitted")
+            self.assertEqual(self.start(FILE_ID)["status"], "submitted")
         self.backend.start.assert_called_once()
 
     def test_second_submission_returns_same_running_operation(self):
-        self.assertEqual(self.jobs.start(FILE_ID)["status"], "submitted")
-        repeated = self.jobs.start(FILE_ID, keywords=["보험"])
+        self.assertEqual(self.start(FILE_ID)["status"], "submitted")
+        repeated = self.start(FILE_ID, keywords=["보험"])
         self.assertEqual(repeated, {
             "status": "already_running", "operation": OPERATION,
             "duplicate": True,
         })
         self.backend.start.assert_called_once_with(
             FILE_ID, keywords=(), prompt="", language="auto", replace_existing=False,
+            owner="google-a", drive_envelope="encrypted-a",
         )
         self.assertEqual(len(self.claims.documents), 1)
         self.assertEqual(
@@ -117,8 +120,8 @@ class DeduplicationTests(unittest.TestCase):
         )
 
     def test_shared_source_deduplicates_without_revealing_the_other_operation(self):
-        self.jobs.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a")
-        duplicate = self.jobs.start(FILE_ID, owner="google-b", drive_envelope="encrypted-b")
+        self.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a")
+        duplicate = self.start(FILE_ID, owner="google-b", drive_envelope="encrypted-b")
         self.assertEqual(duplicate, {"status": "already_running", "duplicate": True})
         self.backend.start.assert_called_once()
         self.assertEqual(self.jobs.status(OPERATION, owner="google-a")["status"], "running")
@@ -126,107 +129,107 @@ class DeduplicationTests(unittest.TestCase):
             self.jobs.status(OPERATION, owner="google-b")
 
     def test_completed_source_does_not_relaunch_paid_job(self):
-        self.jobs.start(FILE_ID)
+        self.start(FILE_ID)
         self.backend.status.return_value = {
             "status": "completed", "operation": OPERATION,
         }
-        self.assertEqual(self.jobs.start(FILE_ID)["status"], "already_completed")
+        self.assertEqual(self.start(FILE_ID)["status"], "already_completed")
         self.backend.start.assert_called_once()
 
     def test_actual_result_format_and_owner_survive_retranscription(self):
-        self.jobs.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a")
+        self.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a")
         self.backend.status.return_value = {"status": "completed", "operation": OPERATION, "execution": "execution-a"}
         receipt = {"result": "created", "output_format": "txt", "transcript_file_id": "output-id"}
         self.claims.results["execution-a"] = ("google-a", receipt)
-        duplicate = self.jobs.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a", output_format="md")
+        duplicate = self.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a", output_format="md")
         self.assertEqual(duplicate["requested_output_format"], "md")
         self.assertEqual(duplicate["output_format"], "txt")
         self.assertEqual(duplicate["transcript_file_id"], "output-id")
         self.backend.start.assert_called_once()
         self.backend.start.return_value = {"status": "submitted", "operation": OPERATION + "-new"}
-        self.jobs.start(FILE_ID, retry=True, replace_existing=True, owner="google-a", drive_envelope="encrypted-a")
+        self.start(FILE_ID, retry=True, replace_existing=True, owner="google-a", drive_envelope="encrypted-a")
         self.assertEqual(self.jobs.status(OPERATION, owner="google-a")["transcript_file_id"], "output-id")
         with self.assertRaises(PermissionError):
             self.jobs.status(OPERATION, owner="google-b")
 
     def test_missing_result_does_not_change_completed_execution(self):
-        self.jobs.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a")
+        self.start(FILE_ID, owner="google-a", drive_envelope="encrypted-a")
         self.backend.status.return_value = {"status": "completed", "operation": OPERATION, "execution": "execution-a"}
         self.assertEqual(self.jobs.status(OPERATION, owner="google-a"), {
             "status": "completed", "operation": OPERATION, "result_available": False,
         })
 
     def test_completed_job_requires_explicit_retry(self):
-        self.jobs.start(FILE_ID)
+        self.start(FILE_ID)
         self.backend.status.return_value = {
             "status": "completed", "operation": OPERATION,
         }
         self.assertEqual(
-            self.jobs.start(FILE_ID)["status"], "already_completed",
+            self.start(FILE_ID)["status"], "already_completed",
         )
         self.backend.start.assert_called_once()
         self.assertEqual(
-            self.jobs.start(FILE_ID, retry=True)["status"], "submitted",
+            self.start(FILE_ID, retry=True)["status"], "submitted",
         )
         self.assertEqual(self.backend.start.call_count, 2)
 
     def test_explicit_retry_after_failure_replaces_claim(self):
-        self.jobs.start(FILE_ID)
+        self.start(FILE_ID)
         self.backend.status.return_value = {
             "status": "failed", "operation": OPERATION,
         }
-        self.assertEqual(self.jobs.start(FILE_ID)["status"], "previous_failed")
+        self.assertEqual(self.start(FILE_ID)["status"], "previous_failed")
         self.backend.start.assert_called_once()
         self.assertEqual(
-            self.jobs.start(FILE_ID, retry=True)["status"], "submitted",
+            self.start(FILE_ID, retry=True)["status"], "submitted",
         )
         self.assertEqual(self.backend.start.call_count, 2)
 
     def test_uncertain_network_response_does_not_auto_resubmit(self):
         self.backend.start.side_effect = TimeoutError("unknown Cloud Run result")
         with self.assertRaises(TimeoutError):
-            self.jobs.start(FILE_ID)
+            self.start(FILE_ID)
         self.backend.start.reset_mock(side_effect=True)
-        self.assertEqual(self.jobs.start(FILE_ID)["status"], "already_submitting")
+        self.assertEqual(self.start(FILE_ID)["status"], "already_submitting")
         self.now += UNKNOWN_SUBMISSION_RETRY_SECONDS + 1
         self.assertEqual(
-            self.jobs.start(FILE_ID)["status"], "submission_unconfirmed",
+            self.start(FILE_ID)["status"], "submission_unconfirmed",
         )
         self.backend.start.assert_not_called()
         self.backend.start.return_value = {
             "status": "submitted", "operation": OPERATION,
         }
         self.assertEqual(
-            self.jobs.start(FILE_ID, retry=True)["status"], "submitted",
+            self.start(FILE_ID, retry=True)["status"], "submitted",
         )
         self.backend.start.assert_called_once()
 
     def test_status_outage_never_launches_a_duplicate(self):
-        self.jobs.start(FILE_ID)
+        self.start(FILE_ID)
         self.backend.status.side_effect = RuntimeError("cloud API offline")
-        repeated = self.jobs.start(FILE_ID)
+        repeated = self.start(FILE_ID)
         self.assertEqual(repeated["status"], "operation_unavailable")
         self.assertTrue(repeated["retry_requires_confirmation"])
         self.backend.start.assert_called_once()
 
     def test_expired_operation_must_be_explicitly_retried(self):
-        self.jobs.start(FILE_ID)
+        self.start(FILE_ID)
         self.backend.status.side_effect = RuntimeError("operation no longer available")
         self.now += UNKNOWN_SUBMISSION_RETRY_SECONDS + 10
-        old = self.jobs.start(FILE_ID)
+        old = self.start(FILE_ID)
         self.assertEqual(old["status"], "operation_unavailable")
         self.backend.start.assert_called_once()
         self.backend.status.reset_mock(side_effect=True)
         self.backend.status.side_effect = RuntimeError("expired")
         self.assertEqual(
-            self.jobs.start(FILE_ID, retry=True)["status"], "submitted",
+            self.start(FILE_ID, retry=True)["status"], "submitted",
         )
         self.assertEqual(self.backend.start.call_count, 2)
 
     def test_claim_expiration_is_seven_days_and_extended_on_retry(self):
         from datetime import datetime, timezone
 
-        first = self.jobs.start(FILE_ID)
+        first = self.start(FILE_ID)
         self.assertEqual(first["status"], "submitted")
         key = next(iter(self.claims.documents))
         record = self.claims.read(key)
@@ -240,7 +243,7 @@ class DeduplicationTests(unittest.TestCase):
             "status": "failed", "operation": OPERATION,
         }
         self.now += 100
-        self.jobs.start(FILE_ID, retry=True)
+        self.start(FILE_ID, retry=True)
         updated = self.claims.read(key)
         self.assertNotEqual(
             record["fields"]["expires_at"],
@@ -250,7 +253,7 @@ class DeduplicationTests(unittest.TestCase):
     def test_claim_store_outage_fails_closed_before_billable_request(self):
         self.claims.create = Mock(side_effect=RuntimeError("Firestore unavailable"))
         with self.assertRaises(RuntimeError):
-            self.jobs.start(FILE_ID)
+            self.start(FILE_ID)
         self.backend.start.assert_not_called()
 
     def test_reject_invalid_options_before_reserving(self):
@@ -260,17 +263,17 @@ class DeduplicationTests(unittest.TestCase):
             {"file_id": FILE_ID, "retry": "yes"},
         ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
-                self.jobs.start(**kwargs)
+                self.start(**kwargs)
         self.assertEqual(self.claims.documents, {})
         self.backend.start.assert_not_called()
 
     def test_failed_claim_publication_keeps_job_operation_visible(self):
         self.claims.publish = Mock(side_effect=RuntimeError("Firestore offline"))
-        result = self.jobs.start(FILE_ID)
+        result = self.start(FILE_ID)
         self.assertEqual(result["status"], "submitted")
         self.assertEqual(result["operation"], OPERATION)
         self.assertIn("warning", result)
-        self.assertEqual(self.jobs.start(FILE_ID)["status"], "already_submitting")
+        self.assertEqual(self.start(FILE_ID)["status"], "already_submitting")
         self.backend.start.assert_called_once()
 
     def test_concurrent_requests_cannot_start_twice(self):
@@ -284,9 +287,9 @@ class DeduplicationTests(unittest.TestCase):
 
         self.backend.start.side_effect = delayed_start
         with ThreadPoolExecutor(max_workers=2) as pool:
-            first = pool.submit(self.jobs.start, FILE_ID)
+            first = pool.submit(self.start, FILE_ID)
             self.assertTrue(started.wait(timeout=5))
-            second = pool.submit(self.jobs.start, FILE_ID)
+            second = pool.submit(self.start, FILE_ID)
             self.assertEqual(second.result(timeout=5)["status"], "already_submitting")
             continue_job.set()
             self.assertEqual(first.result(timeout=5)["status"], "submitted")

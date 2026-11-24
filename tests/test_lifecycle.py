@@ -165,8 +165,6 @@ class CloudTemporaryStorageTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            secret = root / "rclone.conf"
-            secret.write_text("[gdrive]\ntype = drive\n", encoding="utf-8")
             original_temporary_directory = tempfile.TemporaryDirectory
 
             for fail in (False, True):
@@ -178,7 +176,7 @@ class CloudTemporaryStorageTests(unittest.TestCase):
                         created.append(Path(instance.name))
                         return instance
 
-                    def simulate_transcription(file_id, **kwargs):
+                    def simulate_transcription(credential, file_id, private, **kwargs):
                         cloud_cache = Path(os.environ["SCRIBEFLOW_CACHE_DIR"])
                         cloud_cache.mkdir(parents=True, exist_ok=True)
                         (cloud_cache / "fake-segment.mp3").write_bytes(b"temporary bytes")
@@ -189,7 +187,8 @@ class CloudTemporaryStorageTests(unittest.TestCase):
                     with patch.dict(os.environ, {
                         "OPENAI_API_KEY": "test-only",
                         "SCRIBEFLOW_SOURCE_FILE_ID": "file_" + "a" * 26,
-                        "SCRIBEFLOW_RCLONE_CONFIG_SECRET": str(secret),
+                        "SCRIBEFLOW_LINKED_DRIVE_ENVELOPE": "sealed",
+                        "SCRIBEFLOW_REQUEST_OWNER": "google-user",
                         "SCRIBEFLOW_KEYWORDS_JSON": "[]",
                         "SCRIBEFLOW_PROMPT": "",
                     }):
@@ -198,9 +197,9 @@ class CloudTemporaryStorageTests(unittest.TestCase):
                             side_effect=capture_temporary_dir,
                         ):
                             with patch(
-                                "scribeflow.cloud_worker.transcribe",
+                                "scribeflow.cloud_worker.transcribe_drive",
                                 side_effect=simulate_transcription,
-                            ):
+                            ), patch("scribeflow.cloud_worker.DriveCredential.open", return_value=object()):
                                 if fail:
                                     with self.assertRaisesRegex(RuntimeError, "upload"):
                                         run_job()
@@ -208,7 +207,6 @@ class CloudTemporaryStorageTests(unittest.TestCase):
                                     self.assertEqual(run_job()["status"], "created")
                     self.assertEqual(len(created), 1)
                     self.assertFalse(created[0].exists())
-                    self.assertTrue(secret.exists())
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")

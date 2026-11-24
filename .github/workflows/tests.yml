@@ -74,7 +74,7 @@ jobs:
       - name: Smoke test cloud image dependencies
         run: |
           docker run --rm --entrypoint sh scribeflow:ci -c \
-            'rclone version && ffmpeg -version | head -n 1 && python -c "import scribeflow.cloud_entry, scribeflow.cloud_gateway, scribeflow.cloud_worker; print(\"Cloud modules import OK\")"'
+            '! command -v rclone && ffmpeg -version | head -n 1 && python -c "import scribeflow.cloud_entry, scribeflow.cloud_gateway, scribeflow.cloud_worker; print(\"Cloud modules import OK\")"'
       - name: Publish tested image to GitHub Container Registry
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:

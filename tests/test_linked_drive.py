@@ -45,6 +45,7 @@ class LinkedDriveTests(unittest.TestCase):
             "SCRIBEFLOW_SOURCE_FILE_ID": FILE_ID,
         }, clear=True):
             credential = DriveCredential("google-b", int(time.time()) + 3600)
+            os.environ["SCRIBEFLOW_REQUEST_OWNER"] = "google-b"
             os.environ["SCRIBEFLOW_LINKED_DRIVE_ENVELOPE"] = envelope = credential.seal(FILE_ID)
             self.assertNotIn("google-b", envelope)
             with self.assertRaises(PermissionError):

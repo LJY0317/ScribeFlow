@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -14,14 +13,13 @@ from urllib.error import HTTPError
 from .cloud_run import normalize_language, normalize_output_format, normalize_transcription_context
 from .drive_transcription import DriveTranscriptionError, transcribe_drive
 from .linked_drive import DriveCredential
-from .pipeline import NoSpeechDetectedError, transcribe
+from .pipeline import NoSpeechDetectedError
 
 
 def run_job() -> dict:
     """Run one transcription; credentials are injected at deployment time."""
     file_id = os.environ.get("SCRIBEFLOW_SOURCE_FILE_ID", "").strip()
     envelope = os.environ.get("SCRIBEFLOW_LINKED_DRIVE_ENVELOPE", "")
-    config_secret = os.environ.get("SCRIBEFLOW_RCLONE_CONFIG_SECRET", "").strip()
     keywords, prompt = normalize_transcription_context(
         json.loads(os.environ.get("SCRIBEFLOW_KEYWORDS_JSON") or "[]"),
         os.environ.get("SCRIBEFLOW_PROMPT", ""),
@@ -35,42 +33,26 @@ def run_job() -> dict:
         raise ValueError("SCRIBEFLOW_SOURCE_FILE_ID must be a Google Drive file ID")
     if not os.environ.get("OPENAI_API_KEY"):
         raise ValueError("OPENAI_API_KEY is not configured")
-    if not envelope and (not config_secret or not Path(config_secret).is_file()):
-        raise ValueError("ScribeFlow rclone config secret must be mounted as a file")
+    if not envelope or not os.environ.get("SCRIBEFLOW_REQUEST_OWNER"):
+        raise ValueError("A connected Google account is required for a transcription job")
 
-    # The Secret Manager mount is read-only, but rclone can refresh OAuth tokens.
-    # Supply a writable private copy for this job; it is removed on completion.
+    credential = DriveCredential.open(envelope, file_id)
     with tempfile.TemporaryDirectory(prefix="scribeflow-cloud-") as directory:
         private = Path(directory)
-        scope = {"SCRIBEFLOW_CACHE_DIR": str(private / "cache")}
-        if not envelope:
-            config = private / "rclone.conf"
-            shutil.copyfile(config_secret, config)
-            config.chmod(0o600)
-            scope["RCLONE_CONFIG"] = str(config)
-        previous = {name: os.environ.get(name) for name in scope}
+        previous_cache = os.environ.get("SCRIBEFLOW_CACHE_DIR")
+        os.environ["SCRIBEFLOW_CACHE_DIR"] = str(private / "cache")
         try:
-            os.environ.update(scope)
-            if envelope:
-                return transcribe_drive(
-                    DriveCredential.open(envelope, file_id), file_id, private,
-                    keywords=keywords, prompt=prompt, language=language,
-                    replace_existing=replace_existing, transcript_file_id=transcript_file_id,
-                    output_format=output_format,
-                )
-            options = {"transcript_file_id": transcript_file_id} if transcript_file_id else {}
-            if output_format != "txt":
-                options["output_format"] = output_format
-            return transcribe(
-                file_id, keywords=keywords, prompt=prompt, language=language,
-                replace_existing=replace_existing, retain_chunks=False, **options,
+            return transcribe_drive(
+                credential, file_id, private,
+                keywords=keywords, prompt=prompt, language=language,
+                replace_existing=replace_existing, transcript_file_id=transcript_file_id,
+                output_format=output_format,
             )
         finally:
-            for name, value in previous.items():
-                if value is None:
-                    os.environ.pop(name, None)
-                else:
-                    os.environ[name] = value
+            if previous_cache is None:
+                os.environ.pop("SCRIBEFLOW_CACHE_DIR", None)
+            else:
+                os.environ["SCRIBEFLOW_CACHE_DIR"] = previous_cache
 
 
 def _result_summary(result: dict) -> dict:
@@ -80,9 +62,6 @@ def _result_summary(result: dict) -> dict:
         if result.get(field):
             summary[field] = result[field]
     file_id = result.get("transcript_file_id")
-    if not file_id and result.get("url"):
-        match = re.fullmatch(r"https://drive\.google\.com/file/d/([A-Za-z0-9_-]{10,})/view", result["url"])
-        file_id = match.group(1) if match else None
     if result.get("ok") and file_id and re.fullmatch(r"[A-Za-z0-9_-]{10,}", file_id):
         summary.update(transcript_file_id=file_id, transcript_url=f"https://drive.google.com/file/d/{file_id}/view")
     return summary

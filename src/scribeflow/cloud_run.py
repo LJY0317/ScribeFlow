@@ -102,14 +102,15 @@ class CloudRunJobs:
 
     def start(
         self, file_id: str, keywords: list[str] | tuple[str, ...] | None = None,
-        prompt: str = "", language: str = "auto", *, replace_existing: bool = False, drive_envelope: str = "",
-        transcript_file_id: str = "",
+        prompt: str = "", language: str = "auto", *, owner: str, drive_envelope: str,
+        replace_existing: bool = False, transcript_file_id: str = "",
         output_format: str = "txt",
-        owner: str = "",
     ) -> dict:
         """Queue one job with optional vocabulary/context; no audio in gateway."""
         if not _FILE_ID.fullmatch(file_id):
             raise ValueError("A valid Google Drive file ID is required")
+        if not owner or not drive_envelope:
+            raise ValueError("A connected Google account is required")
         terms, context = normalize_transcription_context(keywords, prompt)
         language = normalize_language(language)
         output_format = normalize_output_format(output_format)
@@ -131,14 +132,14 @@ class CloudRunJobs:
             if not replace_existing or not _FILE_ID.fullmatch(transcript_file_id):
                 raise ValueError("A valid replacement transcript ID requires replacement mode")
             variables.append({"name": "SCRIBEFLOW_TRANSCRIPT_FILE_ID", "value": transcript_file_id})
-        overrides = {"containerOverrides": [{"env": variables}], "taskCount": 1}
-        if drive_envelope:
-            from .linked_drive import JOB_TIMEOUT_SECONDS
+        from .linked_drive import JOB_TIMEOUT_SECONDS
 
-            variables.append({"name": "SCRIBEFLOW_LINKED_DRIVE_ENVELOPE", "value": drive_envelope})
-            if owner:
-                variables.append({"name": "SCRIBEFLOW_REQUEST_OWNER", "value": owner})
-            overrides["timeout"] = f"{JOB_TIMEOUT_SECONDS}s"
+        variables.extend([
+            {"name": "SCRIBEFLOW_LINKED_DRIVE_ENVELOPE", "value": drive_envelope},
+            {"name": "SCRIBEFLOW_REQUEST_OWNER", "value": owner},
+        ])
+        overrides = {"containerOverrides": [{"env": variables}], "taskCount": 1,
+                     "timeout": f"{JOB_TIMEOUT_SECONDS}s"}
         operation = self._call("POST", self.target.resource + ":run", payload={"overrides": overrides})
         name = operation.get("name", "")
         if not name.startswith(self.target.operation_prefix):

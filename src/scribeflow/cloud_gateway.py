@@ -67,13 +67,11 @@ def create_server():
     # Cloud Run scales to zero; OAuth registrations and tokens must persist.
     origin = os.environ["SCRIBEFLOW_MCP_URL"].rstrip("/")
     owner_email = os.environ["SCRIBEFLOW_GOOGLE_EMAIL"].strip()
-    linked = os.environ.get("SCRIBEFLOW_LINKED_DRIVE") == "1"
     emails = {owner_email.casefold()}
-    if linked:
-        additional = os.environ.get("SCRIBEFLOW_GOOGLE_ADDITIONAL_EMAILS", "")
-        emails.update(email.casefold() for email in additional.split())
-        if not os.environ.get("SCRIBEFLOW_DRIVE_JOB_KEY"):
-            raise ValueError("Linked Google Drive requires a job encryption key")
+    additional = os.environ.get("SCRIBEFLOW_GOOGLE_ADDITIONAL_EMAILS", "")
+    emails.update(email.casefold() for email in additional.split())
+    if not os.environ.get("SCRIBEFLOW_DRIVE_JOB_KEY"):
+        raise ValueError("Google Drive jobs require an encryption key")
     client_id = os.environ["SCRIBEFLOW_GOOGLE_CLIENT_ID"]
     client_secret = os.environ["SCRIBEFLOW_GOOGLE_CLIENT_SECRET"]
     seed = os.environ["SCRIBEFLOW_OAUTH_SEED"]
@@ -94,9 +92,7 @@ def create_server():
         ),
         fernet=Fernet(fernet_key),
     )
-    required_scopes = ["openid", _GOOGLE_EMAIL]
-    if linked:
-        required_scopes.append(DRIVE_SCOPE)
+    required_scopes = ["openid", _GOOGLE_EMAIL, DRIVE_SCOPE]
     valid_scopes = [*required_scopes, _GOOGLE_PROFILE]
     auth = GoogleProvider(
         client_id=client_id,
@@ -105,7 +101,7 @@ def create_server():
         required_scopes=required_scopes,
         valid_scopes=valid_scopes,
         extra_authorize_params={"scope": " ".join(valid_scopes), "prompt": "consent select_account"},
-        token_expiry_threshold_seconds=MIN_TOKEN_SECONDS if linked else 0,
+        token_expiry_threshold_seconds=MIN_TOKEN_SECONDS,
         jwt_signing_key=jwt_key,
         client_storage=store,
         require_authorization_consent=True,
@@ -141,35 +137,29 @@ def create_server():
         """Get the Google profile image URL for the current connection, when available."""
         return {"picture": _require_owner(emails).claims.get("picture")}
 
-    def linked_credential(token) -> DriveCredential:
-        if not linked:
-            raise PermissionError("This deployment has not enabled per-account Google Drive access")
-        return DriveCredential.from_connection(token)
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def search_drive_files(
+        name: str = "", page_token: str = "", drive_id: str = "", include_shared_drives: bool = True,
+    ) -> dict:
+        """List Drive files by name prefix or list all files. Use nextPageToken to continue.
 
-    if linked:
-        @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
-        def search_drive_files(
-            name: str = "", page_token: str = "", drive_id: str = "", include_shared_drives: bool = True,
-        ) -> dict:
-            """List Drive files by name prefix or list all files. Use nextPageToken to continue.
+        If incompleteSearch is true, list individual shared drives or set
+        include_shared_drives=false for the personal and directly shared file view.
+        """
+        return search_files(
+            DriveCredential.from_connection(_require_owner(emails)), name, page_token, drive_id,
+            include_shared_drives=include_shared_drives,
+        )
 
-            If incompleteSearch is true, list individual shared drives or set
-            include_shared_drives=false for the personal and directly shared file view.
-            """
-            return search_files(
-                linked_credential(_require_owner(emails)), name, page_token, drive_id,
-                include_shared_drives=include_shared_drives,
-            )
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def list_google_shared_drives(page_token: str = "") -> dict:
+        """List the shared drives this account can browse individually if global search is incomplete."""
+        return list_shared_drives(DriveCredential.from_connection(_require_owner(emails)), page_token)
 
-        @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
-        def list_google_shared_drives(page_token: str = "") -> dict:
-            """List the shared drives this account can browse individually if global search is incomplete."""
-            return list_shared_drives(linked_credential(_require_owner(emails)), page_token)
-
-        @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
-        def check_drive_file(file_id: str) -> dict:
-            """Check a file's download and output folder permissions without transcribing."""
-            return check_file(linked_credential(_require_owner(emails)), file_id)
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def check_drive_file(file_id: str) -> dict:
+        """Check a file's download and output folder permissions without transcribing."""
+        return check_file(DriveCredential.from_connection(_require_owner(emails)), file_id)
 
     def start(file_id, keywords, prompt, retry, language, *, replace_existing=False, transcript_file_id="", output_format="txt"):
         token = _require_owner(emails)
@@ -178,16 +168,15 @@ def create_server():
             if not replace_existing or not _FILE_ID.fullmatch(transcript_file_id):
                 raise ValueError("An existing Drive transcript ID is required for explicit replacement")
             options["transcript_file_id"] = transcript_file_id
-        if linked:
-            if not _FILE_ID.fullmatch(file_id):
-                raise ValueError("A valid Google Drive file ID is required")
-            credential = linked_credential(token)
-            file = check_file(credential, file_id)
-            if not file["can_download"]:
-                raise PermissionError("The connected account must be able to read the audio")
-            if os.path.splitext(file["name"])[1].lower() not in SUPPORTED_AUDIO_SUFFIXES:
-                raise ValueError("Select a supported audio file")
-            options.update(owner=str(token.claims["sub"]), drive_envelope=credential.seal(file_id))
+        if not _FILE_ID.fullmatch(file_id):
+            raise ValueError("A valid Google Drive file ID is required")
+        credential = DriveCredential.from_connection(token)
+        file = check_file(credential, file_id)
+        if not file["can_download"]:
+            raise PermissionError("The connected account must be able to read the audio")
+        if os.path.splitext(file["name"])[1].lower() not in SUPPORTED_AUDIO_SUFFIXES:
+            raise ValueError("Select a supported audio file")
+        options.update(owner=str(token.claims["sub"]), drive_envelope=credential.seal(file_id))
         return backend.start(
             file_id, keywords=keywords, prompt=prompt, retry=retry, language=language,
             **({"output_format": output_format} if output_format != "txt" else {}),
@@ -244,7 +233,7 @@ def create_server():
     )
     def get_transcription_status(operation: str) -> dict:
         token = _require_owner(emails)
-        return backend.status(operation, **({"owner": str(token.claims["sub"])} if linked else {}))
+        return backend.status(operation, owner=str(token.claims["sub"]))
 
     return server
 
