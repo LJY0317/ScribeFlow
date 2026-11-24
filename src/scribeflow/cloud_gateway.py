@@ -52,15 +52,38 @@ def _require_owner(allowed_email: str | set[str]):
     return token
 
 
-def create_server():
-    from cryptography.fernet import Fernet
-    from fastmcp import FastMCP
-    from fastmcp.server.auth.providers.google import GoogleProvider
+def _oauth_store(project: str):
+    """Use Firestore native TTL while keeping the SDK's existing record format."""
+    from datetime import datetime
+    from key_value.aio.stores.base import BasicSerializationAdapter
     from key_value.aio.stores.firestore import (
         FirestoreStore,
         FirestoreV1CollectionSanitizationStrategy,
         FirestoreV1KeySanitizationStrategy,
     )
+
+    class ExpiringSerializer(BasicSerializationAdapter):
+        def prepare_dump(self, data):
+            data = super().prepare_dump(data)
+            if expiry := data.get("expires_at"):
+                data["delete_at"] = datetime.fromisoformat(expiry)
+            return data
+
+    store = FirestoreStore(
+        project=project, database="scribeflow-oauth", default_collection="scribeflow_oauth",
+        key_sanitization_strategy=FirestoreV1KeySanitizationStrategy(),
+        collection_sanitization_strategy=FirestoreV1CollectionSanitizationStrategy(),
+    )
+    # The inherited BaseStore serialization extension is not a FirestoreStore
+    # constructor option in 0.4.x. Keep the adapter isolated and tested.
+    store._serialization_adapter = ExpiringSerializer(value_format="string")
+    return store
+
+
+def create_server():
+    from cryptography.fernet import Fernet
+    from fastmcp import FastMCP
+    from fastmcp.server.auth.providers.google import GoogleProvider
     from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
     from mcp.types import ToolAnnotations
 
@@ -83,13 +106,7 @@ def create_server():
         hashlib.sha256(b"scribeflow-storage-v1:" + material).digest()
     )
     store = FernetEncryptionWrapper(
-        key_value=FirestoreStore(
-            project=os.environ["GOOGLE_CLOUD_PROJECT"],
-            database="scribeflow-oauth",
-            default_collection="scribeflow_oauth",
-            key_sanitization_strategy=FirestoreV1KeySanitizationStrategy(),
-            collection_sanitization_strategy=FirestoreV1CollectionSanitizationStrategy(),
-        ),
+        key_value=_oauth_store(os.environ["GOOGLE_CLOUD_PROJECT"]),
         fernet=Fernet(fernet_key),
     )
     required_scopes = ["openid", _GOOGLE_EMAIL, DRIVE_SCOPE]
@@ -112,7 +129,6 @@ def create_server():
             region=os.environ.get("SCRIBEFLOW_REGION", "asia-northeast3"),
             job=os.environ.get("SCRIBEFLOW_JOB", "scribeflow-transcribe"),
         ),
-        previous_region=os.environ.get("SCRIBEFLOW_PREVIOUS_WORKER_REGION"),
     )
     backend = DeduplicatingCloudRunJobs(
         jobs, FirestoreJobClaims(os.environ["GOOGLE_CLOUD_PROJECT"], jobs.session),
@@ -192,10 +208,10 @@ def create_server():
             "or another supported code to hint a known language. "
             "output_format selects one output file: 'txt' (default, plain text) or 'md' (Markdown). "
             "Matching adjacent TXT or Markdown transcripts are reused without another OpenAI request unless "
-            "their recorded OpenAI model has a supported upgrade to the configured model. "
+            "their recorded OpenAI model has a supported upgrade and their body checksum matches. "
             "A supported upgrade re-transcribes and updates the existing file in its original format and location, "
-            "preserving its ID; detected manual edits, unknown models and source mismatches are not overwritten. "
-            "Legacy transcripts without a body checksum cannot be checked for prior manual edits. "
+            "preserving its ID. Missing or changed body checksums require explicit retranscribe_audio; "
+            "unknown models and source mismatches are not overwritten by ordinary transcription. "
             "Concurrent requests for the same audio reuse the active job; later requests recheck current Drive/model state. "
             "Explicit retry=True is required to repeat a failed job or stale submission. "
             "Do not retranscribe solely to convert an existing transcript to another format."

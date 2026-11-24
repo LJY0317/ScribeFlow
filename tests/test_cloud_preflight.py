@@ -1,6 +1,8 @@
 """Deployment helpers use mock commands; no real Cloud resources are changed."""
 
 import json
+import importlib.util
+from unittest.mock import patch
 import os
 import subprocess
 import tempfile
@@ -133,13 +135,6 @@ esac
         self.assertTrue(calls[1].startswith("run jobs describe "))
         self.assertIn("--region=us-central1", calls[1])
 
-    def test_worker_only_uses_same_deployed_routing(self):
-        result, calls = self.run_script("deploy-worker-only.sh")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(calls), 2)
-        self.assertTrue(calls[1].startswith("run jobs update "))
-        self.assertIn("--region=us-central1", calls[1])
-
     def test_ambiguous_or_missing_gateway_does_not_update_anything(self):
         for services in ([], [self.service, self.service]):
             with self.subTest(count=len(services)):
@@ -155,6 +150,34 @@ esac
         self.assertEqual(len(calls), 1)
         self.assertIn("--region=asia-northeast3", calls[0])
         self.assertIn("differs from the existing Gateway target", result.stderr)
+
+    def test_prune_preserves_current_tagged_and_recent_resources(self):
+        from datetime import datetime, timedelta, timezone
+        with patch.dict(os.environ, {"GCP_PROJECT": "example-project"}):
+            spec = importlib.util.spec_from_file_location("resources", SCRIPTS / "cloud-run-resources.py")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        self.service["status"] = {
+            "latestReadyRevisionName": "current",
+            "traffic": [{"revisionName": "current", "percent": 100},
+                        {"revisionName": "tagged", "tag": "preview", "percent": 0}],
+        }
+        self.service["spec"]["template"]["spec"]["containers"][0]["image"] = IMAGE
+        worker = self.worker("scribeflow-transcribe", "us-central1")
+        worker["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["image"] = IMAGE
+        def execution(name, days):
+            return {"metadata": {"name": name}, "status": {
+                "completionTime": (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()}}
+        executions = [execution("recent", 1), execution("expired", 8)]
+        revisions = [{"metadata": {"name": name}} for name in ("current", "tagged", "obsolete")]
+        with patch.object(module, "gateways", return_value=[self.service]), \
+             patch.object(module, "query", side_effect=[worker, executions, revisions]), \
+             patch.object(module, "mutate") as mutate:
+            module.prune(True)
+        self.assertEqual([c.args for c in mutate.call_args_list], [
+            ("run", "revisions", "delete", "obsolete", "--region=asia-northeast3"),
+            ("run", "jobs", "executions", "delete", "expired", "--region=us-central1"),
+        ])
 
     def test_initial_install_does_not_overwrite_existing_resources(self):
         for existing in ({"FAKE_EXISTING_SERVICE": "scribeflow-mcp"},

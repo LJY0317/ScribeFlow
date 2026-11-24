@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from filelock import FileLock, Timeout
@@ -34,89 +35,99 @@ def job_lock(root: Path, signature: str) -> FileLock:
 
 
 def _size(path: Path) -> int:
-    return sum(
-        item.stat().st_size
-        for item in path.rglob("*")
-        if item.is_file() and not item.is_symlink()
-    )
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file() and not item.is_symlink():
+                total += item.stat().st_size
+        except FileNotFoundError:
+            pass  # An active job finished while enumerating its cache.
+    return total
+
+
+def _owned_directories(root: Path, area: str) -> list[Path]:
+    parent = root / area
+    return [
+        path for path in parent.iterdir()
+        if not path.is_symlink() and path.is_dir() and re.fullmatch(r"[0-9a-f]{64}", path.name)
+    ] if parent.is_dir() else []
+
+
+@contextmanager
+def download_workspace(root: Path, key: str):
+    """Serialize one Drive source; downloaded audio is never a retry artifact."""
+    path = root / "downloads" / key
+    with job_lock(root, key):
+        if path.exists():
+            shutil.rmtree(path)
+        path.mkdir(parents=True, mode=0o700)
+        try:
+            yield path
+        finally:
+            shutil.rmtree(path)
 
 
 def cache_stats(root: Path) -> dict:
-    jobs = root / "jobs"
-    directories = [
-        p for p in jobs.iterdir()
-        if p.is_dir() and re.fullmatch(r"[0-9a-f]{64}", p.name)
-    ] if jobs.is_dir() else []
+    directories = _owned_directories(root, "jobs") + _owned_directories(root, "downloads")
     return {"jobs": len(directories), "bytes": sum(_size(p) for p in directories)}
 
 
 def clean_cache(root: Path) -> dict:
-    """Remove expired jobs, then oldest unlocked jobs above the size budget.
-
-    Runs only when requested or when starting a new transcription.  Jobs that
-    are actively locked are skipped, as are recently active jobs when trimming
-    for size.  No source audio or published transcript is ever removed.
-    """
+    """Remove unused downloads and expired/over-budget retry caches on demand."""
     jobs = root / "jobs"
+    downloads = root / "downloads"
     now = time.time()
-    candidates = []
-    total = 0
-    for p in jobs.iterdir() if jobs.is_dir() else ():
-        if not p.is_dir() or not re.fullmatch(r"[0-9a-f]{64}", p.name):
-            continue
-        size = _size(p)
-        total += size
-        candidates.append((p.stat().st_mtime, p, size))
     removed = 0
+    for path in _owned_directories(root, "downloads"):
+        lock = job_lock(root, path.name)
+        try:
+            with lock.acquire(timeout=0):
+                if path.is_dir():
+                    shutil.rmtree(path)
+                    removed += 1
+        except Timeout:
+            pass
+    candidates = []
+    for path in _owned_directories(root, "jobs"):
+        try:
+            candidates.append((path.stat().st_mtime, path, _size(path)))
+        except FileNotFoundError:
+            pass
+    total = sum(size for _, _, size in candidates)
+    total += sum(_size(path) for path in _owned_directories(root, "downloads"))
     for last_used, path, size in sorted(candidates):
         age = now - last_used
-        published = (path / ".published").is_file()
-        # A final TXT already exists for published jobs. Never keep their
-        # intermediate chunks solely because a previous cleanup failed.
-        if not published and age < MAX_AGE_SECONDS and (
+        if not (path / ".published").is_file() and age < MAX_AGE_SECONDS and (
             total <= MAX_TOTAL_BYTES or age < MIN_IDLE_SECONDS_FOR_SIZE_CLEANUP
         ):
             continue
         lock = job_lock(root, path.name)
         try:
-            lock.acquire(timeout=0)
+            with lock.acquire(timeout=0):
+                if path.is_dir():
+                    # A retry may have finished after the initial enumeration.
+                    if path.stat().st_mtime != last_used:
+                        continue
+                    shutil.rmtree(path)
+                    total -= size
+                    removed += 1
         except Timeout:
-            continue
-        try:
-            if path.is_dir():
-                shutil.rmtree(path)
-                total -= size
-                removed += 1
-        finally:
-            lock.release()
-    # Crashed remote downloads use a separate temporary area. Do not touch
-    # folders that may still be in use by an active transcription.
-    downloads = root / "downloads"
-    if downloads.is_dir():
-        for path in downloads.iterdir():
-            if (path.is_dir() and path.name.startswith("download-")
-                    and now - path.stat().st_mtime > MAX_AGE_SECONDS):
-                shutil.rmtree(path)
-    # Retire abandoned locks without letting a concurrent caller acquire a
-    # live lock and then have its inode unlinked by the cleaner.
+            pass
+    # A lock file is safe to retire only after obtaining the same lock.
     locks = root / "locks"
     if locks.is_dir():
         for path in locks.iterdir():
-            if (not path.is_file() or not re.fullmatch(r"[0-9a-f]{64}\.lock", path.name)
-                    or now - path.stat().st_mtime <= MAX_AGE_SECONDS
-                    or (jobs / path.stem).exists()):
-                continue
-            lock = FileLock(str(path))
             try:
-                lock.acquire(timeout=0)
-            except Timeout:
+                if (not path.is_file() or not re.fullmatch(r"[0-9a-f]{64}\.lock", path.name)
+                        or now - path.stat().st_mtime <= MAX_AGE_SECONDS
+                        or (jobs / path.stem).exists() or (downloads / path.stem).exists()):
+                    continue
+            except FileNotFoundError:
                 continue
-            else:
-                try:
-                    # POSIX filelock rejects unlinked inodes on acquisition.
-                    # WindowsFileLock manages its own lock-file removal.
+            try:
+                with FileLock(str(path)).acquire(timeout=0):
                     if os.name != "nt":
                         path.unlink(missing_ok=True)
-                finally:
-                    lock.release()
+            except Timeout:
+                pass
     return {"removed_jobs": removed, **cache_stats(root)}

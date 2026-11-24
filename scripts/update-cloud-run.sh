@@ -4,12 +4,10 @@ set -euo pipefail
 
 : "${GCP_PROJECT:?Set GCP_PROJECT to the existing Cloud project ID}"
 dry_run=false
-worker_only=false
 for arg in "$@"; do
   case "$arg" in
     --dry-run) dry_run=true ;;
-    --worker-only) worker_only=true ;;
-    *) echo "Usage: $0 [--dry-run] [--worker-only]" >&2; exit 2 ;;
+    *) echo "Usage: $0 [--dry-run]" >&2; exit 2 ;;
   esac
 done
 
@@ -33,8 +31,6 @@ fi
 
 gcloud run jobs update "$job" --image "$IMAGE" \
   --project="$GCP_PROJECT" --region="$worker_region"
-if ! "$worker_only"; then
-  gcloud run services update "$service" --image "$IMAGE" \
-    --project="$GCP_PROJECT" --region="$gateway_region"
-fi
+gcloud run services update "$service" --image "$IMAGE" \
+  --project="$GCP_PROJECT" --region="$gateway_region"
 echo "Image update complete. Existing settings and Secret Manager references retained."

@@ -90,8 +90,8 @@ class DriveTranscriptionTests(unittest.TestCase):
                            parents=[self.folder])
         self.sibling_transcripts.return_value = [self.target]
 
-    def test_known_legacy_model_is_upgraded_in_place_even_if_other_format_requested(self):
-        self.existing_model("whisper-1", legacy=True, name="sample.md")
+    def test_known_unchanged_model_is_upgraded_in_place_even_if_other_format_requested(self):
+        self.existing_model("whisper-1", name="sample.md")
         result = self.run_drive()
         self.assertEqual(result["status"], "upgraded")
         self.assertEqual(result["previous_model"], "whisper-1")
@@ -100,6 +100,14 @@ class DriveTranscriptionTests(unittest.TestCase):
         self.assertEqual(result["transcript_file_id"], self.text_id)
         self.update_transcript.assert_called_once_with(self.text_id, "test", self.new_text, content_type="text/markdown")
         self.create_transcript.assert_not_called()
+
+    def test_legacy_body_requires_explicit_retranscription(self):
+        self.existing_model("whisper-1", edited=True, legacy=True)
+        self.assertEqual(self.run_drive()["status"], "skipped_existing")
+        self.transcribe.assert_not_called()
+        self.update_transcript.assert_not_called()
+        self.assertEqual(self.run_drive(replace_existing=True)["status"], "replaced")
+        self.update_transcript.assert_called_once()
 
     def test_same_unknown_diarized_or_edited_model_is_not_replaced(self):
         for model, edited in (("gpt-transcribe", False), ("unknown-model", False),

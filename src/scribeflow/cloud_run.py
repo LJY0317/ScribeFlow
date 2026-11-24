@@ -79,12 +79,9 @@ class CloudRunTarget:
 
 class CloudRunJobs:
     def __init__(
-        self, target: CloudRunTarget, session: Any = None, *, previous_region: str | None = None,
+        self, target: CloudRunTarget, session: Any = None,
     ):
         self.target = target
-        self.status_targets = (target,)
-        if previous_region and previous_region != target.region:
-            self.status_targets += (CloudRunTarget(target.project, previous_region, target.job),)
         if session is None:
             import google.auth
             from google.auth.transport.requests import AuthorizedSession
@@ -148,13 +145,10 @@ class CloudRunJobs:
 
     def status(self, operation_name: str) -> dict:
         """Inspect an existing execution; do not resubmit or incur API costs."""
-        target = next((
-            candidate for candidate in self.status_targets
-            if operation_name.startswith(candidate.operation_prefix)
-            and re.fullmatch(r"[A-Za-z0-9_-]+", operation_name[len(candidate.operation_prefix):])
-        ), None)
-        if target is None:
-            raise ValueError("Operation is not in the configured Cloud Run project")
+        target = self.target
+        if not (operation_name.startswith(target.operation_prefix)
+                and re.fullmatch(r"[A-Za-z0-9_-]+", operation_name[len(target.operation_prefix):])):
+            raise ValueError("Operation is not in the configured Cloud Run project and region")
         operation = self._call("GET", operation_name)
         if not operation.get("done"):
             return {"status": "running", "operation": operation_name}

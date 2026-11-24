@@ -27,9 +27,26 @@ class CloudGatewayTests(unittest.TestCase):
         from key_value.aio.stores.memory import MemoryStore
         with patch.dict(os.environ, {**self.settings, **settings}, clear=True):
             with patch("scribeflow.cloud_gateway.CloudRunJobs"):
-                with patch("key_value.aio.stores.firestore.FirestoreStore",
-                           side_effect=lambda **kwargs: MemoryStore()):
+                with patch("scribeflow.cloud_gateway._oauth_store",
+                           side_effect=lambda project: MemoryStore()):
                     return create_server()
+
+    def test_oauth_storage_adds_native_expiry_without_changing_sdk_format(self):
+        from datetime import datetime, timezone
+        from scribeflow.cloud_gateway import _oauth_store
+        from key_value.aio._utils.managed_entry import ManagedEntry
+        with patch("key_value.aio.stores.firestore.FirestoreStore") as store:
+            adapter = _oauth_store("sample")._serialization_adapter
+            instant = datetime(2026, 12, 1, tzinfo=timezone.utc)
+            entry = ManagedEntry(value={"encrypted": "synthetic"}, expires_at=instant)
+            data = adapter.dump_dict(entry)
+            self.assertEqual(data["expires_at"], instant.isoformat())
+            self.assertEqual(data["delete_at"], instant)
+            self.assertEqual(adapter.load_dict(data).value, entry.value)
+            data.pop("delete_at")
+            self.assertEqual(adapter.load_dict(data).expires_at, instant)
+            self.assertNotIn("delete_at", adapter.dump_dict(ManagedEntry(value={"active": True})))
+            store.assert_called_once()
 
     def test_google_config_required(self):
         for key in ("SCRIBEFLOW_MCP_URL", "SCRIBEFLOW_GOOGLE_EMAIL",

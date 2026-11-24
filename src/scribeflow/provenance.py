@@ -50,17 +50,14 @@ def model_upgrade_recommended(details: dict | None, current_model: str) -> bool:
 def can_upgrade_transcript(transcript: str, current_model: str) -> bool:
     """Called only after matching the original audio SHA-256.
 
-    Legacy complete metadata has no body hash: an explicit request to transcribe
-    the selected audio may upgrade it, but its prior manual edits are unknowable.
-    For newly stamped transcripts, a changed body prevents automatic replacement.
+    A recorded, matching body hash is required. Older transcripts or manually
+    edited bodies can only be replaced by an explicit retranscription.
     """
     if not model_upgrade_recommended(transcript_model(transcript), current_model):
         return False
     footer = _FOOTER.search(transcript)
     digest = _BODY_DIGEST.search(footer["metadata"] or "")
-    if digest is None:
-        return " | Transcript SHA256:" not in (footer["metadata"] or "")
-    return digest[1] == _body_sha256(transcript[:footer.start()])
+    return bool(digest and digest[1] == _body_sha256(transcript[:footer.start()]))
 
 
 @dataclass(frozen=True)

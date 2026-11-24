@@ -21,7 +21,7 @@ from math import ceil
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .cache import clean_cache, job_lock, retain_failed_cache
+from .cache import clean_cache, download_workspace, job_lock, retain_failed_cache
 from .cloud_run import normalize_language, normalize_output_format, normalize_transcription_context
 from .drive_lookup import candidate_from_id, existing_access_token
 from .engine import (
@@ -158,8 +158,7 @@ def resolve_source(source: str) -> str:
     metadata = None
     shared_before = os.environ.get("RCLONE_DRIVE_SHARED_WITH_ME")
     # A shared-with-me folder isn't included in the normal My Drive root.
-    # A worker processes one file, so keep the matching rclone view for its
-    # subsequent download, transcript lookup, and upload.
+    # Keep its view for the remaining path lookup; Drive I/O is ID-based.
     if not os.environ.get("SCRIBEFLOW_DRIVE_ROOT_FOLDER_ID") and shared_before is None:
         os.environ["RCLONE_DRIVE_SHARED_WITH_ME"] = "true"
         try:
@@ -297,9 +296,7 @@ def _transcribe_drive_cli(
         raise ValueError("A valid Google Drive file ID is required")
     credential = _LocalDriveCredential()
     lock_key = hashlib.sha256(("drive:" + file_id).encode()).hexdigest()
-    downloads = cache / "downloads"
-    downloads.mkdir(parents=True, exist_ok=True)
-    with job_lock(cache, lock_key), tempfile.TemporaryDirectory(prefix="drive-", dir=downloads) as directory:
+    with download_workspace(cache, lock_key) as directory:
         try:
             result = transcribe_drive(
                 credential, file_id, Path(directory), output_format=output_format,

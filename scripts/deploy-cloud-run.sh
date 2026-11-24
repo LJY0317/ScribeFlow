@@ -88,6 +88,7 @@ if ! gcloud firestore databases describe --database=scribeflow-oauth \
   gcloud firestore databases create --database=scribeflow-oauth \
     --location="$REGION" --type=firestore-native --project="$GCP_PROJECT"
 fi
+python3 "$(dirname "$0")/cloud-run-resources.py" retention
 gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --member="serviceAccount:$GATEWAY_SA" --role=roles/datastore.user --condition=None >/dev/null
 gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
@@ -126,7 +127,7 @@ gcloud run deploy "$SERVICE" --image "$IMAGE" --project "$GCP_PROJECT" \
   --region "$REGION" --service-account "$GATEWAY_SA" \
   --cpu 1 --memory 512Mi --min-instances 0 --max-instances 1 \
   --no-allow-unauthenticated \
-  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=gateway,GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},SCRIBEFLOW_REGION=${WORKER_REGION},SCRIBEFLOW_PREVIOUS_WORKER_REGION=${SCRIBEFLOW_PREVIOUS_WORKER_REGION:-},SCRIBEFLOW_JOB=${JOB},SCRIBEFLOW_MCP_URL=${URL},SCRIBEFLOW_GOOGLE_CLIENT_ID=${SCRIBEFLOW_GOOGLE_CLIENT_ID},SCRIBEFLOW_GOOGLE_EMAIL=${SCRIBEFLOW_GOOGLE_EMAIL},SCRIBEFLOW_GOOGLE_ADDITIONAL_EMAILS=${ADDITIONAL_EMAILS}" \
+  --set-env-vars="SCRIBEFLOW_CLOUD_MODE=gateway,GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},SCRIBEFLOW_REGION=${WORKER_REGION},SCRIBEFLOW_JOB=${JOB},SCRIBEFLOW_MCP_URL=${URL},SCRIBEFLOW_GOOGLE_CLIENT_ID=${SCRIBEFLOW_GOOGLE_CLIENT_ID},SCRIBEFLOW_GOOGLE_EMAIL=${SCRIBEFLOW_GOOGLE_EMAIL},SCRIBEFLOW_GOOGLE_ADDITIONAL_EMAILS=${ADDITIONAL_EMAILS}" \
   --set-secrets="$gateway_secrets"
 
 # Cloud Run may return its hash-based alias from status.url, even when the

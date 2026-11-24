@@ -64,7 +64,7 @@ class ProvenanceTests(unittest.TestCase):
                 self.assertFalse(can_upgrade_transcript(stamped, "unknown-new-model"))
                 self.assertFalse(can_upgrade_transcript(stamped.replace("speech", "edited"), "gpt-transcribe"))
                 legacy = re.sub(r" \| Transcript SHA256: [0-9a-f]{64}", "", stamped)
-                self.assertEqual(can_upgrade_transcript(legacy, "gpt-transcribe"), expected)
+                self.assertFalse(can_upgrade_transcript(legacy, "gpt-transcribe"))
         self.assertFalse(can_upgrade_transcript(stamp_transcript("speech", sha), "gpt-transcribe"))
 
     def test_source_fingerprint_is_last_line_and_idempotent(self):

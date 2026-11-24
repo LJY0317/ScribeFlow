@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from filelock import FileLock
 
-from scribeflow.cache import MAX_AGE_SECONDS, cache_stats, clean_cache
+from scribeflow.cache import MAX_AGE_SECONDS, cache_stats, clean_cache, download_workspace
 from scribeflow.pipeline import (
     _drive_file_id, assemble_transcript, cache_root, paths_for,
     resolve_source, run_rclone, scan_drive, transcribe,
@@ -364,6 +364,21 @@ class PipelineTests(unittest.TestCase):
                     transcribe(str(source))
                 self.assertEqual(cache_stats(cache)["jobs"], 0)
                 self.assertTrue((location / "recording.txt").exists())
+
+    def test_download_cache_is_counted_and_orphan_is_removed_without_touching_active(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key = "a" * 64
+            orphan = root / "downloads" / ("b" * 64)
+            orphan.mkdir(parents=True)
+            (orphan / "audio.wav").write_bytes(b"orphan")
+            with download_workspace(root, key) as active:
+                (active / "audio.wav").write_bytes(b"active")
+                self.assertEqual(cache_stats(root), {"jobs": 2, "bytes": 12})
+                self.assertEqual(clean_cache(root)["removed_jobs"], 1)
+                self.assertTrue(active.exists())
+                self.assertFalse(orphan.exists())
+            self.assertEqual(cache_stats(root), {"jobs": 0, "bytes": 0})
 
     def test_clean_only_expired_owned_jobs_not_active(self):
         with tempfile.TemporaryDirectory() as directory:

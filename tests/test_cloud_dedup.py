@@ -24,7 +24,6 @@ class FakeClaims:
         self.documents = {}
         self.results = {}
         self.revision = 0
-        self.sweep_expired = Mock()
 
     def _snapshot(self, value):
         return copy.deepcopy(value)
@@ -96,11 +95,11 @@ class DeduplicationTests(unittest.TestCase):
         )
         self.start = partial(self.jobs.start, owner="google-a", drive_envelope="encrypted-a")
 
-    def test_expired_claim_cleanup_failure_does_not_stop_submission(self):
-        self.claims.sweep_expired.side_effect = RuntimeError("maintenance unavailable")
-        with self.assertLogs("scribeflow.cloud_dedup", level="WARNING"):
-            self.assertEqual(self.start(FILE_ID)["status"], "submitted")
-        self.backend.start.assert_called_once()
+    def test_expired_claim_can_be_replaced_before_ttl_deletion(self):
+        self.assertEqual(self.start(FILE_ID)["status"], "submitted")
+        self.now += 7 * 86400
+        self.assertEqual(self.start(FILE_ID)["status"], "submitted")
+        self.assertEqual(self.backend.start.call_count, 2)
 
     def test_second_submission_returns_same_running_operation(self):
         self.assertEqual(self.start(FILE_ID)["status"], "submitted")
@@ -357,43 +356,6 @@ class FirestoreRestClaimsTests(unittest.TestCase):
         self.assertIn("expires_at", fields)
         self.session.request.return_value = self.response(200, {"fields": fields})
         self.assertEqual(self.claims.read_result("execution-a"), ("owner-a", receipt))
-
-    def test_sweep_filters_expired_records_and_deletes_only_queried_versions(self):
-        document = {"name": "projects/p/databases/db/documents/scribeflow_job_claims/old",
-                    "updateTime": "2026-11-13T00:00:00Z"}
-        self.session.request.side_effect = [
-            self.response(404), self.response(200),
-            self.response(200, [{"document": document}, {"readTime": "ignored"}]),
-            self.response(200, {"status": [{"code": 9}]}),
-        ]
-        self.claims.sweep_expired(0)
-        self.claims.sweep_expired(1)
-        _, marker, query, delete = self.session.request.call_args_list
-        self.assertEqual(marker.kwargs["params"], {"currentDocument.exists": "false"})
-        request = query.kwargs["json"]["structuredQuery"]
-        self.assertEqual(request["limit"], 100)
-        self.assertEqual(request["from"], [{"collectionId": "scribeflow_job_claims"}])
-        self.assertEqual(request["where"]["fieldFilter"], {
-            "field": {"fieldPath": "expires_at"}, "op": "LESS_THAN_OR_EQUAL",
-            "value": {"timestampValue": "1970-01-01T00:00:00Z"},
-        })
-        self.assertEqual(delete.kwargs["json"], {"writes": [{
-            "delete": document["name"], "currentDocument": {"updateTime": document["updateTime"]},
-        }]})
-
-    def test_sweep_does_not_run_when_another_instance_reserved_the_day(self):
-        self.session.request.return_value = self.response(200, {
-            "fields": {"day": {"stringValue": "1970-01-01"}},
-        })
-        self.claims.sweep_expired(0)
-        self.session.request.assert_called_once()
-
-    def test_sweep_lost_race_does_not_delete_anything(self):
-        self.session.request.side_effect = [self.response(404), self.response(412)]
-        self.claims.sweep_expired(0)
-        self.assertEqual(self.session.request.call_count, 2)
-
-
 
 if __name__ == "__main__":
     unittest.main()

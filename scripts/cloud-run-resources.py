@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 
 SERVICE = "scribeflow-mcp"
 JOB = "scribeflow-transcribe"
@@ -102,10 +103,88 @@ def inventory():
         print("|".join(row))
 
 
+# Expiry-bearing SDK collections and ScribeFlow's own operation/result records.
+TTL_FIELDS = {
+    "scribeflow_job_claims": "expires_at",
+    "mcp-authorization-codes": "delete_at",
+    "mcp-consent-csrf-tokens": "delete_at",
+    "mcp-jti-mappings": "delete_at",
+    "mcp-oauth-transactions": "delete_at",
+    "mcp-refresh-tokens": "delete_at",
+    "mcp-upstream-tokens": "delete_at",
+    "mcp-rotated-refresh-tokens": "delete_at",
+}
+
+
+def mutate(*args):
+    subprocess.run(["gcloud", *args, f"--project={PROJECT}", "--quiet"], check=True)
+
+
+def retention():
+    """Configure platform TTL once; no periodic application sweeper."""
+    existing = query("firestore", "fields", "ttls", "list", "--database=scribeflow-oauth")
+    configured = {field["name"].split("/collectionGroups/")[-1] for field in existing
+                  if field.get("ttlConfig", {}).get("state") in {"ACTIVE", "CREATING"}}
+    for collection, field in TTL_FIELDS.items():
+        if f"{collection}/fields/{field}" not in configured:
+            mutate("firestore", "fields", "ttls", "update", field,
+                   f"--collection-group={collection}", "--database=scribeflow-oauth",
+                   "--enable-ttl", "--async")
+    print("Native Firestore TTL configured; activation/deletion is asynchronous.")
+
+
+def prune(apply=False):
+    """Remove only unreferenced revisions and expired completed executions."""
+    services = gateways()
+    if len(services) != 1:
+        sys.exit("Pruning requires one verified Gateway deployment.")
+    service = services[0]
+    gateway_region = region(service)
+    worker_region, job, image = gateway_route(service)
+    worker = query("run", "jobs", "describe", job, f"--region={worker_region}")
+    spec = worker["spec"]["template"]["spec"]["template"]["spec"]
+    if spec["containers"][0]["image"] != image:
+        sys.exit("Gateway/Worker image mismatch: no resources deleted.")
+    status = service.get("status", {})
+    current = status.get("latestReadyRevisionName")
+    traffic = status.get("traffic", [])
+    if not current or not any(t.get("revisionName") == current and t.get("percent") == 100 for t in traffic):
+        sys.exit("Gateway has not completed deployment to one current revision.")
+    protected = {t.get("revisionName") for t in traffic if t.get("percent", 0) or t.get("tag")}
+    protected.add(current)
+    executions = query("run", "jobs", "executions", "list", f"--job={job}", f"--region={worker_region}")
+    if any(not e.get("status", {}).get("completionTime") for e in executions):
+        sys.exit("Transcription is active; finish it before pruning release artifacts.")
+    revisions = query("run", "revisions", "list", f"--service={SERVICE}", f"--region={gateway_region}")
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    targets = [
+        ("revision", r["metadata"]["name"], gateway_region)
+        for r in revisions if r["metadata"]["name"] not in protected
+    ]
+    targets.extend(
+        ("execution", e["metadata"]["name"], worker_region)
+        for e in executions if datetime.fromisoformat(
+            e["status"]["completionTime"].replace("Z", "+00:00")) < cutoff
+    )
+    print(f"Keeping current Gateway {current} and Worker image {image}.")
+    for kind, name, location in targets:
+        print(f"{'Deleting' if apply else 'Would delete'} {kind} {name} ({location})", flush=True)
+        if apply:
+            args = ("run", "revisions", "delete") if kind == "revision" else ("run", "jobs", "executions", "delete")
+            mutate(*args, name, f"--region={location}")
+    print(f"{len(targets)} obsolete resources {'removed' if apply else 'identified'}.")
+
+
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["target"]:
         target()
     elif sys.argv[1:] == ["inventory"]:
         inventory()
+    elif sys.argv[1:] == ["retention"]:
+        retention()
+    elif sys.argv[1:] in (["prune"], ["prune", "--apply"]):
+        prune("--apply" in sys.argv)
     else:
-        sys.exit("Usage: cloud-run-resources.py target|inventory")
+        sys.exit("Usage: cloud-run-resources.py target|inventory|retention|prune [--apply]")
